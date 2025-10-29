@@ -19,7 +19,7 @@ OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"  # Замените на ваш OpenAI AP
 USE_OPENAI = False  # True для использования OpenAI вместо эвристики
 
 # ГигаЧат настройки - ГОТОВЫЙ ACCESS TOKEN (если понадобится)
-from token inport TOKEN
+from token import TOKEN
 GIGACHAT_ACCESS_TOKEN = TOKEN
 # Redis настройки
 REDIS_HOST = "localhost"
