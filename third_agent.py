@@ -1,72 +1,137 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+АГЕНТ №3 — Модерация с GigaChat (обновленная версия на основе agent3.4)
+"""
+
 import requests
 import json
 import redis
 import time
+import logging
 from typing import Dict, Any
 import urllib3
+from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, BigInteger, Text
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+import asyncio
 
 # Отключаем warning SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# =============================================================================
-# КОНФИГУРАЦИЯ
-# =============================================================================
+# ============================================================================
+# ЛОГИРОВАНИЕ
+# ============================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [АГЕНТ 3] %(levelname)s: %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Access Token для GigaChat API
-ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.wESCCGpAKhedFyZu53Xe8StqCwL22Wv4o0SWl_kRARYe1ReHdpsESOCx8wjyI-mKMyrXT-_GWdebs0xSBR3ocZFEeK-Nh6DURnxxHoVDKABhHaAKarA_MNpjU1OO1YSV69Pxu2qb1kxn4KZZvbiDl1sDi-nUt0J9fViU9I38fdGEwTJkCxU6b9zhcK3AHtKIQEA3KbHRYCb0w5J4xYc40GZeLvlSg41YqqGAQDX0SnefcxxVJDkdL4PwINiGoSpQMUHlFJ-OnHdCMNF2aJHyZZxmh9SDQoEhlZpxw72Q4rQz9gDr215MPIB1a8ujLdJ3_qagzauRAaJSVH-2Rd3E5Q.K5PFOlabJf9FehG7e8xl9w.G_JyR9VYnvrzexaE0JJV0nwN0ERnUzmlyYopyPNyAkGyvNneb85gnjaVvueWIJyeVw1FCSFtXD_zGwpTRdMVCCLGbVG-J4yesQF3M37tmQRHv1bnmX3c5bn2nRx1dG0V9UYhJlJPu6z99foBPN3ql_OoLdVDkezePvJRx2DmRZ5gF1mnZJ_4G377XRPbFIF9VbOdjKOoZmFH9TFp1Yf1g1piY_S8kQkftjcRKfkH_uTtnxtND52m5MqKt5MUuMRZkDUFs_xcfpBCM62_HkrvT4SH25YcocuVlG_7DKQNG6DIQL3kVPzIGgHYgkajJ5NzDfzfLrfgzTQWhIv1wv3Gt-JonAESyVrdSJM8bMZkJwQ4bYJSYs-wTv_QHGkdmLgt8MI56p35rtWgh9UqFORqvWebuNdRCmfIeFUDMXAtWPyHd6rP0gwLFKND0Hs2YB8vDd5znT-MmoIj4iOHJGmQoDAx3hN1Ix7_EAeL_xTbVB5W9mUlYwbphHL94h1OY9BEEDPT2urePVrt6r83d7poVATDbande88IvFbIIzLcCaOtoi6ACIPOdMKtrFWZclBf0PT8JIDOzxQpmcVVPbRLX79_YUW0OIhVzSBm4swfYcUUf6c7fz-EP-mozxkuVbeyf6lh64VRKQpSviSXlye-ypBRZgW4JWBSDl2TLiX91K_GpuVTvr7ujvVsq56OYI3u5Oy3mOnFbF1F5vnpEmERTWPnAF98f1Cuwv_cglIm0dQ.Ibhh5i_xa9wc_wfJlqv9lm8hED2eHyzewglZAJ8JKZQ"
+# ============================================================================
+# КОНФИГУРАЦИЯ БД
+# ============================================================================
+POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
 
-AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmE5NzBiNjJmLWNkYzMtNDM2Yy1iODA5LTc2YjhmZTI4YzBhMQ=="
+# ============================================================================
+# КОНФИГУРАЦИЯ GIGACHAT
+# ============================================================================
+ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.cv8YybaNK-3R-ALyaWB-AY1LGRKY8SBOguCeMJBYw4lYG9hdr8TS9nzY2xzOfMP0vX7jKrQ3rqxLOgj8IoDjxD9UL3HZlO1jhH75DoxvU68jHA0_5w_WNr6A82d3qvm2-2bdNkUp9eGwblY4I56eKdodRjJ2vscy9GrITu1lOPgzqP0ZI7D8wt_mqQyZjPEyMhmBqZcW7rExwN8ILaU36KysispjvBHZWKAcF77F4WOvmN0VAbs1ifmHUkWZY3g9gTJdpET2IP0k6u5i78rIX58eOTkCosIG19Il4byFf20GcluSMpKAZkdFXTkK6LBDQK-CD18-ZGCsMWaKthWFWg.My7TQEvIVBXO5vRZkmFoXA.T61aZMMnfFKNy-LEtbwYXuSaQfia6b_kUYvaiuqmcgVcRzfwsqOG7EFyuc_c60HCXR3_TueE_MEr49z92SVUOuTponbfzf54vartyhqnmPzHQvdD-57Ko8gQxAKojRXWBGGKTeCLFwPRtjkPWhAel9M1y0G0exRcwFfnHkEBG2EFJDHvtnmlFnkGf-cfWDn9AliObQj7LA6WTO5j_xTIgpJMeIcgb0-KGonYw_UUfkUeFUC2-bwcZpGDDW1PvG05_Seh1tfu6J60U_xtB8TpxAlWpucUbmf71Ka1lFstkRhQcrEB2DkTOztPbErkX7XcHVM_BeYPm8jeFcSLF6C-euS4Z2YMYmmwzMuOOD1Th3DcKABpnAs9FrUUOLM2zGHXGJxKPx5JbYTRUrzibqqMk0d4xywjTpgY7I0Xc7mh2JkpFAUjnClS-x9QwwW0UXZ_tFjSoCovNmitDHkv9cXkkXhhFvQ-QBLQ7ittBVRUUG4LgdY8KtoHMVT6CsoCDz6fwO2Wc55XYvjFeI24hla2unWFdcGG8ab2KjVhlsFZq9i2XIp1LryLx3xGgGP_1K9txHCxSDlQf5M5uKmtnCPawnl2W1bkpthTSPaoV_xmeRIr465B8dDR29SjSHIAeMrOamYDncyWkLvA-wc93teYgJ1EBqrP6zkKF_HiDpTtKns5ZABjF0BzJAjc3f_FlLDQOCYWhrwcnjNBf600-IDGdAxVq6mflPIOBvbimZc_QxQ.3mGdrfeOVuD6xYscptelPxZ7VHE-cys6w4psXGX5V7I"
+AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmE0MzRhNjExLTE2NGYtNDdjYS1iNTM2LThlMGViMmU0YzVmNg=="
 
-# Redis настройки
+# ============================================================================
+# КОНФИГУРАЦИЯ REDIS
+# ============================================================================
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
 REDIS_DB = 0
 REDIS_PASSWORD = None
 
+# Очереди для взаимодействия с другими агентами
 QUEUE_AGENT_3_INPUT = "queue:agent3:input"
 QUEUE_AGENT_3_OUTPUT = "queue:agent3:output"
+QUEUE_AGENT_4_INPUT = "queue:agent4:input"
+QUEUE_AGENT_5_INPUT = "queue:agent5:input"
 
-# =============================================================================
-# СПИСОК НЕЦЕНЗУРНЫХ СЛОВ (для дополнительной проверки)
-# =============================================================================
+# ============================================================================
+# МОДЕЛИ БД (ЕДИНЫЕ ДЛЯ ВСЕХ АГЕНТОВ)
+# ============================================================================
+Base = declarative_base()
 
-PROFANITY_WORDS = [
-    "сука", "чурка", "дурак", "идиот", "тупой", "долбоеб", "мудак", 
-    "хуй", "пизд", "ебан", "бля", "гандон", "уебок", "чмо", "дебил",
-    "даун", "урод", "мразь", "быдло", "козел", "свинья", "сволочь"
-]
+class Chat(Base):
+    __tablename__ = 'chats'
+    id = Column(Integer, primary_key=True)
+    tg_chat_id = Column(String, unique=True, nullable=False)
+    title = Column(String, nullable=True)
+    chat_type = Column(String, default='group')
+    added_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+    
+    messages = relationship('Message', back_populates='chat', cascade="all, delete")
+    moderators = relationship('Moderator', back_populates='chat', cascade="all, delete")
+    negative_messages = relationship('NegativeMessage', back_populates='chat', cascade="all, delete")
 
-DISCRIMINATION_WORDS = [
-    "чурка", "хохол", "москаль", "жид", "негр", "азиат",
-    "узкоглазый", "черножопый", "чучмек", "чучмек"
-]
+class Message(Base):
+    __tablename__ = 'messages'
+    id = Column(Integer, primary_key=True)
+    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
+    message_id = Column(BigInteger, nullable=False)
+    sender_username = Column(String)
+    sender_id = Column(BigInteger)
+    message_text = Column(Text)
+    message_link = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    processed_at = Column(DateTime)
+    ai_response = Column(Text)
+    
+    chat = relationship('Chat', back_populates='messages')
 
-# =============================================================================
+class Moderator(Base):
+    __tablename__ = 'moderators'
+    id = Column(Integer, primary_key=True)
+    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
+    username = Column(String)
+    telegram_user_id = Column(BigInteger)
+    is_active = Column(Boolean, default=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    
+    chat = relationship('Chat', back_populates='moderators')
+
+class NegativeMessage(Base):
+    __tablename__ = 'negative_messages'
+    id = Column(Integer, primary_key=True)
+    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
+    message_link = Column(String)
+    sender_username = Column(String)
+    sender_id = Column(BigInteger)
+    negative_reason = Column(Text)
+    is_sent_to_moderators = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    agent_id = Column(Integer)
+    
+    chat = relationship('Chat', back_populates='negative_messages')
+
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ БД И REDIS
+# ============================================================================
+engine = create_engine(POSTGRES_URL)
+Base.metadata.create_all(engine)
+SessionLocal = sessionmaker(bind=engine)
+
+def get_db_session():
+    return SessionLocal()
+
+# ============================================================================
 # РАБОТА С GIGACHAT API
-# =============================================================================
-
-def check_profanity_simple(message):
-    """
-    Простая проверка на нецензурные слова (дополнительная фильтрация).
-    Возвращает True если найдена нецензурщина.
-    """
-    message_lower = message.lower()
-    
-    for word in PROFANITY_WORDS + DISCRIMINATION_WORDS:
-        if word in message_lower:
-            return True, f"Обнаружено запрещённое слово: '{word}'"
-    
-    return False, ""
-
+# ============================================================================
 def check_message_with_gigachat(message, rules, prompt, token):
     """
     Отправляет запрос в GigaChat API для анализа сообщения.
     """
     url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
     
+    rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
     system_msg = f"""Ты — строгий модератор Telegram-канала.
-
 ПРАВИЛА ЧАТА:
 {rules_text}
 
@@ -85,7 +150,7 @@ def check_message_with_gigachat(message, rules, prompt, token):
             {"role": "system", "content": system_msg},
             {"role": "user", "content": user_msg}
         ],
-        "temperature": 0.1,  # ⬅️ Ещё НИЖЕ для более строгих решений
+        "temperature": 0.1,
         "max_tokens": 300
     }
     
@@ -97,23 +162,14 @@ def check_message_with_gigachat(message, rules, prompt, token):
         return content
     except Exception as e:
         error_msg = f"Ошибка при запросе к GigaChat: {e}"
-        print(f"[ОШИБКА] {error_msg}")
+        logger.error(error_msg)
         return error_msg
 
 def parse_gigachat_response(text, message):
     """
     Парсит ответ GigaChat и определяет, нужен ли бан.
-    Добавлена дополнительная логика для строгости.
     """
     text_lower = text.lower()
-    
-    # Сначала проверяем простым поиском по словам
-    has_profanity, profanity_reason = check_profanity_simple(message)
-    if has_profanity:
-        return {
-            "ban": True,
-            "reason": f"Вердикт: да. {profanity_reason} (Автоматическая фильтрация)"
-        }
     
     # Ключевые слова для BAN
     ban_keywords = [
@@ -139,7 +195,7 @@ def parse_gigachat_response(text, message):
     elif has_ban_words:
         ban = True
     else:
-        # Если непонятно — по умолчанию НЕ БАНИТЬ (презумпция невиновности)
+        # Если непонятно — по умолчанию НЕ БАНИТЬ
         ban = False
     
     return {
@@ -147,22 +203,23 @@ def parse_gigachat_response(text, message):
         "reason": text.strip()
     }
 
-# =============================================================================
-# АГЕНТ 3 — МОДЕРАЦИЯ
-# =============================================================================
-
-def moderation_agent_3(input_data):
+# ============================================================================
+# ОСНОВНАЯ ЛОГИКА АГЕНТА 3
+# ============================================================================
+def moderation_agent_3(input_data, db_session):
     """
     АГЕНТ 3 — Независимый модератор с усиленной проверкой.
+    Сохраняет результаты в БД и отправляет в Redis для других агентов.
     """
-    
     message = input_data.get("message", "")
     rules = input_data.get("rules", [])
-    
     user_id = input_data.get("user_id")
     username = input_data.get("username")
     chat_id = input_data.get("chat_id")
     message_id = input_data.get("message_id")
+    message_link = input_data.get("message_link", "")
+    
+    logger.info(f"Анализирую сообщение от @{username} в чате {chat_id}")
     
     if not message:
         return {
@@ -173,7 +230,8 @@ def moderation_agent_3(input_data):
             "user_id": user_id,
             "username": username,
             "chat_id": chat_id,
-            "message_id": message_id
+            "message_id": message_id,
+            "status": "error"
         }
     
     if not rules:
@@ -185,11 +243,11 @@ def moderation_agent_3(input_data):
             "user_id": user_id,
             "username": username,
             "chat_id": chat_id,
-            "message_id": message_id
+            "message_id": message_id,
+            "status": "error"
         }
     
     token = ACCESS_TOKEN
-    
     if not token:
         return {
             "agent_id": 3,
@@ -199,10 +257,11 @@ def moderation_agent_3(input_data):
             "user_id": user_id,
             "username": username,
             "chat_id": chat_id,
-            "message_id": message_id
+            "message_id": message_id,
+            "status": "error"
         }
     
-    # ⬇️ УЛУЧШЕННЫЙ ПРОМПТ
+    # Промпт для GigaChat
     prompt = """
 ТВОЯ ЗАДАЧА:
 Проанализируй сообщение и определи, нарушает ли оно ЛЮБОЕ из правил выше.
@@ -225,14 +284,11 @@ def moderation_agent_3(input_data):
 
 НАЧИНАЙ АНАЛИЗ:"""
     
-    print(f"[АГЕНТ 3] Анализирую сообщение: {message[:50]}...")
-    
     # Получаем вердикт от GigaChat
     verdict_text = check_message_with_gigachat(message, rules, prompt, token)
+    logger.info(f"Ответ GigaChat получен")
     
-    print(f"[АГЕНТ 3] Ответ GigaChat: {verdict_text[:100]}...")
-    
-    # Парсим ответ с дополнительной проверкой
+    # Парсим ответ
     result = parse_gigachat_response(verdict_text, message)
     
     output = {
@@ -243,21 +299,62 @@ def moderation_agent_3(input_data):
         "user_id": user_id,
         "username": username,
         "chat_id": chat_id,
-        "message_id": message_id
+        "message_id": message_id,
+        "message_link": message_link,
+        "status": "success",
+        "confidence": 0.85 if result["ban"] else 0.8,
+        "timestamp": datetime.now().isoformat()
     }
     
-    print(f"[АГЕНТ 3] Вердикт: {'БАН ⛔' if result['ban'] else 'ОК ✅'}")
+    # Сохраняем исходное сообщение в БД
+    try:
+        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
+        if not chat:
+            chat = Chat(tg_chat_id=str(chat_id))
+            db_session.add(chat)
+            db_session.commit()
+        
+        message_obj = Message(
+            chat_id=chat.id,
+            message_id=message_id,
+            sender_username=username,
+            sender_id=user_id,
+            message_text=message,
+            message_link=message_link,
+            ai_response=result["reason"]
+        )
+        db_session.add(message_obj)
+        db_session.commit()
+        
+        # Если обнаружено нарушение — сохраняем в negative_messages
+        if result["ban"]:
+            negative_msg = NegativeMessage(
+                chat_id=chat.id,
+                message_link=message_link,
+                sender_username=username,
+                sender_id=user_id,
+                negative_reason=result["reason"],
+                agent_id=3,
+                is_sent_to_moderators=False
+            )
+            db_session.add(negative_msg)
+            db_session.commit()
+            logger.warning(f"БАН ⛔ для @{username}: {result['reason'][:50]}...")
+        else:
+            logger.info(f"ОК ✅ для @{username}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении в БД: {e}")
+        output["db_error"] = str(e)
     
     return output
 
-# =============================================================================
-# РАБОТА С REDIS
-# =============================================================================
-
-class Agent3RedisWorker:
-    
-    def __init__(self, redis_config=None):
-        if redis_config is None:
+# ============================================================================
+# РАБОТА С REDIS И ВЗАИМОДЕЙСТВИЕ МЕЖДУ АГЕНТАМИ
+# ============================================================================
+class Agent3Worker:
+    def __init__(self):
+        try:
             redis_config = {
                 "host": REDIS_HOST,
                 "port": REDIS_PORT,
@@ -265,103 +362,169 @@ class Agent3RedisWorker:
                 "password": REDIS_PASSWORD,
                 "decode_responses": True
             }
-        
-        try:
             self.redis_client = redis.Redis(**redis_config)
             self.redis_client.ping()
-            print(f"[АГЕНТ 3] ✅ Подключение к Redis успешно: {REDIS_HOST}:{REDIS_PORT}")
+            logger.info(f"✅ Подключение к Redis успешно: {REDIS_HOST}:{REDIS_PORT}")
         except Exception as e:
-            print(f"[ОШИБКА] Не удалось подключиться к Redis: {e}")
+            logger.error(f"❌ Не удалось подключиться к Redis: {e}")
             raise
     
-    def process_message(self, message_data):
+    def process_message(self, message_data, db_session):
+        """Обрабатывает сообщение от входной очереди"""
         try:
             input_data = json.loads(message_data)
-            result = moderation_agent_3(input_data)
+            result = moderation_agent_3(input_data, db_session)
             return result
-        
         except json.JSONDecodeError as e:
-            print(f"[ОШИБКА] Невалидный JSON: {e}")
+            logger.error(f"Невалидный JSON: {e}")
             return {
                 "agent_id": 3,
                 "ban": False,
                 "reason": f"Ошибка парсинга данных: {e}",
-                "message": ""
+                "message": "",
+                "status": "json_error"
             }
         except Exception as e:
-            print(f"[ОШИБКА] Ошибка обработки сообщения: {e}")
+            logger.error(f"Ошибка обработки сообщения: {e}")
             return {
                 "agent_id": 3,
                 "ban": False,
                 "reason": f"Внутренняя ошибка агента 3: {e}",
-                "message": ""
+                "message": "",
+                "status": "error"
             }
     
     def send_result(self, result):
+        """Отправляет результат в выходную очередь"""
         try:
             result_json = json.dumps(result, ensure_ascii=False)
+            # Отправляем результат в очередь Агента 3
             self.redis_client.rpush(QUEUE_AGENT_3_OUTPUT, result_json)
-            print(f"[АГЕНТ 3] ✅ Результат отправлен")
+            
+            # Если обнаружено нарушение, отправляем также в очередь Агента 5
+            if result.get("ban"):
+                self.redis_client.rpush(QUEUE_AGENT_5_INPUT, result_json)
+                logger.info(f"✅ Результат отправлен Агенту 5")
+            
+            # Также отправляем в очередь Агента 4 для дополнительной проверки
+            self.redis_client.rpush(QUEUE_AGENT_4_INPUT, result_json)
+            logger.info(f"✅ Результат отправлен в очередь")
+            
         except Exception as e:
-            print(f"[ОШИБКА] Не удалось отправить результат: {e}")
+            logger.error(f"Не удалось отправить результат: {e}")
     
     def run(self):
-        print(f"[АГЕНТ 3] ✅ Запущен. Ожидаю сообщения из: {QUEUE_AGENT_3_INPUT}")
-        print(f"[АГЕНТ 3] Результаты в: {QUEUE_AGENT_3_OUTPUT}")
-        print("[АГЕНТ 3] Нажмите Ctrl+C для остановки\n")
+        """Главный цикл обработки сообщений"""
+        logger.info(f"✅ Запущен. Ожидаю сообщения из: {QUEUE_AGENT_3_INPUT}")
+        logger.info(f"   Отправляю результаты в: {QUEUE_AGENT_3_OUTPUT}")
+        logger.info(f"   Отправляю в Агента 5: {QUEUE_AGENT_5_INPUT}")
+        logger.info(f"   Отправляю в Агента 4: {QUEUE_AGENT_4_INPUT}")
+        logger.info("   Нажмите Ctrl+C для остановки\n")
         
-        while True:
-            try:
-                result = self.redis_client.blpop(QUEUE_AGENT_3_INPUT, timeout=1)
-                
-                if result is None:
-                    continue
-                
-                queue_name, message_data = result
-                
-                print(f"\n[АГЕНТ 3] Получено сообщение из {queue_name}")
-                
-                output = self.process_message(message_data)
-                self.send_result(output)
-                
-                print(f"[АГЕНТ 3] Обработка завершена\n")
-            
-            except KeyboardInterrupt:
-                print("\n[АГЕНТ 3] Остановлен (Ctrl+C)")
-                break
-            
-            except Exception as e:
-                print(f"[ОШИБКА] {e}")
-                time.sleep(1)
-        
-        print("[АГЕНТ 3] Остановлен")
+        db_session = None
+        try:
+            while True:
+                try:
+                    result = self.redis_client.blpop(QUEUE_AGENT_3_INPUT, timeout=1)
+                    if result is None:
+                        continue
+                    
+                    queue_name, message_data = result
+                    logger.info(f"📨 Получено сообщение")
+                    
+                    # Создаем новую сессию БД для каждого сообщения
+                    db_session = get_db_session()
+                    output = self.process_message(message_data, db_session)
+                    self.send_result(output)
+                    db_session.close()
+                    
+                    logger.info(f"✅ Обработка завершена\n")
+                    
+                except Exception as e:
+                    logger.error(f"Ошибка в цикле: {e}")
+                    if db_session:
+                        db_session.close()
+                    time.sleep(1)
+                    
+        except KeyboardInterrupt:
+            logger.info("\n❌ Агент 3 остановлен (Ctrl+C)")
+        finally:
+            if db_session:
+                db_session.close()
+            logger.info("Агент 3 завершил работу")
 
-# =============================================================================
+# ============================================================================
+# HEALTH CHECK ENDPOINT
+# ============================================================================
+def create_health_check_server():
+    """Создает простой HTTP сервер для проверки здоровья агента"""
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import threading
+    
+    class HealthCheckHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/health':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                health_info = {
+                    "status": "online",
+                    "agent_id": 3,
+                    "name": "Агент №3 (GigaChat)",
+                    "version": "3.4",
+                    "timestamp": datetime.now().isoformat(),
+                    "redis_queue": QUEUE_AGENT_3_INPUT,
+                    "uptime_seconds": int(time.time())
+                }
+                self.wfile.write(json.dumps(health_info, ensure_ascii=False).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+        
+        def log_message(self, format, *args):
+            # Подавляем логирование HTTP запросов
+            pass
+    
+    server = HTTPServer(('localhost', 8003), HealthCheckHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("✅ Health check сервер запущен на порту 8003")
+
+# ============================================================================
 # ТОЧКА ВХОДА
-# =============================================================================
-
+# ============================================================================
 if __name__ == "__main__":
     import sys
     
     if len(sys.argv) > 1:
         mode = sys.argv[1]
-        
         if mode == "test":
+            # Тестирование
             test_input = {
-                "message": "сука чурка",
+                "message": "Привет всем! Как дела?",
                 "rules": [
                     "Запрещена реклама",
                     "Запрещены нецензурные выражения",
                     "Запрещена дискриминация"
                 ],
                 "user_id": 123,
-                "username": "@test",
+                "username": "test_user",
                 "chat_id": -100,
-                "message_id": 1
+                "message_id": 1,
+                "message_link": "https://t.me/test/1"
             }
-            result = moderation_agent_3(test_input)
+            
+            db_session = get_db_session()
+            result = moderation_agent_3(test_input, db_session)
+            db_session.close()
             print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        worker = Agent3RedisWorker()
-        worker.run()
-
+        # Запуск основного цикла обработки
+        try:
+            create_health_check_server()
+            worker = Agent3Worker()
+            worker.run()
+        except KeyboardInterrupt:
+            logger.info("Выход из программы")
+        except Exception as e:
+            logger.error(f"Критическая ошибка: {e}")
