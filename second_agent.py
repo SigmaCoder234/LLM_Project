@@ -11,7 +11,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 DB_URL = "postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable"
 
 # ГигаЧат настройки - ГОТОВЫЙ ACCESS TOKEN
-from token inport TOKEN
+from token import TOKEN
 GIGACHAT_ACCESS_TOKEN = TOKEN
 # === SQLAlchemy ORM ===
 engine = create_engine(DB_URL)
