@@ -1,124 +1,34 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-=============================================================================
-ЧАТ-АГЕНТ №5 с PostgreSQL - Арбитр многоагентной системы
-=============================================================================
-- Использует модели БД из first_agent.py и teteguard_bot.py
-- Интеграция с PostgreSQL через SQLAlchemy ORM
-- Арбитраж решений между агентами 3 и 4
-- Уведомление модераторов о финальных решениях
-=============================================================================
+АГЕНТ №5 - Финальный координатор решений (ГОТОВЫЙ ACCESS TOKEN)
+Агент №5 получает результаты от Агентов 2, 3 и 4, принимает финальное решение
+о модерации и отправляет уведомления модераторам через REST API.
+
+Использует готовый Access Token для совместимости с обновленной архитектурой
+(хотя сам не использует ГигаЧат напрямую)
 """
 
 import asyncio
-import json
-import os
-import uuid
+import logging
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from typing import Optional, List, Dict, Any
 from enum import Enum
-from typing import Any, Dict, List, Optional
-
+from datetime import datetime
+import asyncpg
 import aiohttp
-from loguru import logger
+import os
+import json
 
-# SQLAlchemy imports - используем те же модели что и в первом агенте
-from sqlalchemy import create_engine, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.sql import func
+# Настройки логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('Agent5')
 
-# Общие модели БД - те же что в first_agent.py и teteguard_bot.py
-from sqlalchemy import Column, Integer, BigInteger, String, Text, Boolean, ForeignKey, DateTime, JSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+# === НАСТРОЙКИ (ГОТОВЫЙ ACCESS TOKEN) ===
+# ГигаЧат настройки - ГОТОВЫЙ ACCESS TOKEN (на случай если понадобится)
+GIGACHAT_ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.tvaS8A1YHU924PE0rt1oMkE_L336Z8K6IR2Hnli0Uo6En18sm_Z9oXC8GIL2GOoGe5kjVXNt76u1U9y4oh1OTT4MNUP__Em11DJE_wwjannYvUT3vsB8mBMSzcczwdbaaHXIihpLBuQn57OrtdEkedXCki94a5zzD4M1kH5JxV5iygd72ay3X1EEWeNKZg3rHY6iP47AIQiKwTCEfM88dhH8eAfGuyw1aFMhcd52NqHP7FtTdlN-7Bg6B9n94JBTkCeoiuicljIpujOXpD51sZXB71oJuEcbbo8ouD1zVKs6b2WNZOgApcD01UMk_B_HDbEOEMW1Wy5eAzQbawba9g.aJuKw2SQ91pqXChZVrkQ-Q.54ys0B80mnvLh0qDubBzlZmfjpPacDDzpMD0JvYKnqkHjWc27PD50fzqf9nKkNePJUxKIH4Nz5__o3c_S9fnOVKWmlzGPgMk6crHFY0SFP-xXURywdFG4wKAodJMHSnDxP_9LvwcokpL4Bmb-I2TsV9VU99QVNj9eZ1v-4_7NTYhu-Ns5836xye8fpvjHHukN4BAdR-UR5X1fXaIdHV1uKImbeI7YsSpPwRgPdWU9z7UKO2CPUJxDbultkyuVr_qenoX3fqK8ns9cbLcu2g3Q7kA-VLg1zZgCK4LaffsatQL1g8cpS_KOOif5zBIC6fbTg4SncyC5UE7Lc6paJVSvV0OkKw4xOHCZNqO6Ab_0lXwD1WbeXIxirnJs-fevhSl2mCQ2oa_UBlUjCzHDpNCibwCw12k5abxVb57LmWX30AGNzKzi796S7G6hOjDgTq242fXnThLFsAMTMGRsQqyvVCVcRIu9EWsT6sB9xq0ikfvsBlsc_bsvC9OsLtfEZsAHFC9wECJA-tuIrNYMmxhbdmKn6Ty-Bd1dd6-HfbRBFTCYOIgLg4Jt4fWThyurldOVdCl7nvm0220MndIMQ46EFVlXJNz9Wkv3TXlAl7m8_hl1IpbnnO_1lQD0uoKIBmcf2KxD2HIo0E-sV-c6REITzg9DKna4_mpRItgAkmgAjXxJgstnLJxISMzYQpe_w4QoWFM-cMuA3uxnQfpw1LMN543b_HB-I9n4mFiYRkO99E.sRM_m5RLwew6bHjt0l5QA9ImiEvKY-eLlM4CWKmav-s"
 
-Base = declarative_base()
-
-class Chat(Base):
-    __tablename__ = "chats"
-    id = Column(Integer, primary_key=True)
-    tg_chat_id = Column(String, unique=True, nullable=False)
-    messages = relationship('Message', back_populates='chat', cascade="all, delete")
-    moderators = relationship('Moderator', back_populates='chat', cascade="all, delete")
-    negative_messages = relationship('NegativeMessage', back_populates='chat', cascade="all, delete")
-
-class Message(Base):
-    __tablename__ = "messages"
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    sender_username = Column(String)
-    sender_id = Column(BigInteger)
-    message_text = Column(String)
-    message_link = Column(String)
-    created_at = Column(DateTime, default=func.now())
-    chat = relationship('Chat', back_populates='messages')
-
-class Moderator(Base):
-    __tablename__ = "moderators"
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    username = Column(String)
-    telegram_user_id = Column(BigInteger)
-    is_active = Column(Boolean, default=True)
-    chat = relationship('Chat', back_populates='moderators')
-
-class NegativeMessage(Base):
-    __tablename__ = "negative_messages"
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    message_link = Column(String)
-    sender_username = Column(String)
-    negative_reason = Column(String)
-    is_sent_to_moderators = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=func.now())
-    chat = relationship('Chat', back_populates='negative_messages')
-
-# =========================
-# Логирование
-# =========================
-from pathlib import Path
-Path("logs").mkdir(exist_ok=True)
-
-logger.remove()
-logger.add(
-    "logs/agent_5_{time:YYYY-MM-DD}.log",
-    rotation="1 day",
-    retention="30 days",
-    level="INFO",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
-)
-logger.add(lambda msg: print(msg, end=""), level="INFO", format="{time:HH:mm:ss} | {level} | {message}")
-
-# =========================
-# Конфигурация
-# =========================
-class Agent5Config:
-    # PostgreSQL настройки - те же что в teteguard_bot.py
-    POSTGRES_HOST = "176.108.248.211"
-    POSTGRES_PORT = 5432
-    POSTGRES_DB = "teleguard_db"
-    POSTGRES_USER = "tguser"
-    POSTGRES_PASSWORD = "mnvm7110"
-    
-    # Telegram Bot API для отправки уведомлений
-    TELEGRAM_BOT_TOKEN = "8320009669:AAHiVLu-Em8EOXBNHYrJ0UhVX3mMMTm8S_g"
-    TELEGRAM_API_URL = "https://api.telegram.org/bot"
-    
-    @property
-    def database_url(self) -> str:
-        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
-    
-    @property
-    def sync_database_url(self) -> str:
-        return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
-
-# =========================
-# Классы данных
-# =========================
+# === ENUM И DATACLASS ===
 class VerdictType(Enum):
-    """Типы вердиктов для модерации"""
     APPROVE = "approve"
     REJECT = "reject"
     WARNING = "warning"
@@ -127,45 +37,62 @@ class VerdictType(Enum):
 
 @dataclass
 class AgentVerdict:
-    """Вердикт от одного агента (№3 или №4)"""
-    agent_id: int
-    ban: bool
-    reason: str
-    confidence: float
+    """Решение от агентов 3 или 4"""
+    agent_id: int  # ID агента (3 или 4)
+    verdict: VerdictType
+    confidence: float  # 0.0-1.0
+    reasoning: str
     timestamp: datetime
     
-    def to_verdict_type(self) -> VerdictType:
-        """Конвертация в VerdictType"""
-        if self.ban:
-            return VerdictType.BAN
-        else:
-            return VerdictType.APPROVE
+    def to_dict(self) -> Dict[str, Any]:
+        """Конвертация в JSON для API"""
+        return {
+            'agent_id': self.agent_id,
+            'verdict': self.verdict.value,
+            'confidence': self.confidence,
+            'reasoning': self.reasoning,
+            'timestamp': self.timestamp.isoformat()
+        }
+
+@dataclass
+class Agent2Report:
+    """Отчет от Агента 2"""
+    report_id: str  # Уникальный ID отчета
+    message_id: int  # ID сообщения Telegram
+    chat_id: int  # ID чата
+    user_id: int  # ID пользователя
+    message_text: str
+    agent3_verdict: AgentVerdict  # Решение от Агента 3
+    agent4_verdict: AgentVerdict  # Решение от Агента 4
+    is_conflicting: bool
+    metadata: Dict[str, Any]
+    
+    def has_conflict(self) -> bool:
+        """Проверка конфликта между агентами"""
+        # Агенты дают разные вердикты
+        verdicts_differ = self.agent3_verdict.verdict != self.agent4_verdict.verdict
+        # Или низкая уверенность у одного из агентов
+        low_confidence = self.agent3_verdict.confidence < 0.7 or self.agent4_verdict.confidence < 0.7
+        return verdicts_differ or low_confidence
 
 @dataclass
 class Agent5Decision:
-    """Финальное решение Агента №5"""
-    decision_id: str
-    message_id: int
-    chat_id: int
-    user_id: int
-    username: str
-    message_text: str
+    """Финальное решение от Агента 5"""
+    decision_id: str  # Уникальный ID решения
+    report_id: str  # ID отчета из Agent2Report
     final_verdict: VerdictType
     confidence: float
     reasoning: str
-    agent3_verdict: VerdictType
-    agent4_verdict: VerdictType
+    agent3_verdict: VerdictType  # Решение Агента 3
+    agent4_verdict: VerdictType  # Решение Агента 4
     was_conflict: bool
     timestamp: datetime
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
+    
+    def to_json(self) -> str:
+        """Конвертация в JSON для API"""
+        return json.dumps({
             'decision_id': self.decision_id,
-            'message_id': self.message_id,
-            'chat_id': self.chat_id,
-            'user_id': self.user_id,
-            'username': self.username,
-            'message_text': self.message_text,
+            'report_id': self.report_id,
             'final_verdict': self.final_verdict.value,
             'confidence': self.confidence,
             'reasoning': self.reasoning,
@@ -173,472 +100,468 @@ class Agent5Decision:
             'agent4_verdict': self.agent4_verdict.value,
             'was_conflict': self.was_conflict,
             'timestamp': self.timestamp.isoformat()
-        }
+        })
 
-# =========================
-# Database Manager
-# =========================
-class Agent5DatabaseManager:
-    def __init__(self, config: Agent5Config):
-        self.config = config
-        self.engine = None
-        self.async_session_factory = None
+@dataclass
+class ModeratorInfo:
+    moderator_id: int  # ID модератора
+    telegram_id: int  # Telegram ID модератора
+    username: str  # Username модератора
+    is_active: bool
+    api_endpoint: Optional[str]  # API endpoint для отправки уведомлений
+
+# === ОСНОВНОЙ КЛАСС АГЕНТА 5 ===
+class Agent5:
+    """
+    Агент №5 - финальный координатор решений.
+    Анализирует результаты от Агентов 3 и 4, принимает финальное решение
+    и отправляет уведомления модераторам через REST API.
+    """
     
-    async def init_database(self):
-        """Инициализация PostgreSQL базы данных"""
-        try:
-            # Создание таблиц синхронно
-            sync_engine = create_engine(self.config.sync_database_url, echo=False)
-            Base.metadata.create_all(sync_engine)
-            sync_engine.dispose()
-            
-            # Создание асинхронного движка PostgreSQL
-            self.engine = create_async_engine(
-                self.config.database_url,
-                echo=False,
-                future=True,
-                pool_pre_ping=True,
-                pool_recycle=3600
-            )
-            
-            self.async_session_factory = async_sessionmaker(
-                self.engine,
-                class_=AsyncSession,
-                expire_on_commit=False
-            )
-            
-            logger.success(f"🗄️ Агент 5: PostgreSQL БД инициализирована")
-        except Exception as e:
-            logger.error(f"❌ Агент 5: Ошибка инициализации PostgreSQL: {e}")
-            raise
-    
-    async def close_database(self):
-        if self.engine:
-            await self.engine.dispose()
-            logger.info("🗄️ Агент 5: Соединение с PostgreSQL закрыто")
-    
-    def get_session(self) -> AsyncSession:
-        if not self.async_session_factory:
-            raise RuntimeError("PostgreSQL database not initialized")
-        return self.async_session_factory()
-    
-    async def get_chat_moderators(self, chat_id: int) -> List[Dict[str, Any]]:
-        """Получить модераторов чата"""
-        try:
-            async with self.get_session() as session:
-                # Сначала найдем chat по tg_chat_id
-                chat_result = await session.execute(
-                    select(Chat).where(Chat.tg_chat_id == str(chat_id))
-                )
-                chat = chat_result.scalar_one_or_none()
-                
-                if not chat:
-                    logger.warning(f"⚠️ Чат {chat_id} не найден в БД")
-                    return []
-                
-                # Получаем модераторов
-                moderators_result = await session.execute(
-                    select(Moderator).where(
-                        Moderator.chat_id == chat.id,
-                        Moderator.is_active == True
-                    )
-                )
-                
-                moderators = moderators_result.scalars().all()
-                
-                return [
-                    {
-                        "id": mod.id,
-                        "username": mod.username,
-                        "telegram_user_id": mod.telegram_user_id
-                    }
-                    for mod in moderators
-                ]
-        except Exception as e:
-            logger.error(f"❌ Агент 5: Ошибка получения модераторов: {e}")
-            return []
-    
-    async def save_negative_message(self, decision: Agent5Decision) -> bool:
-        """Сохранить негативное сообщение в БД"""
-        if decision.final_verdict != VerdictType.BAN:
-            return False
+    def __init__(self, db_config: Dict[str, Any], api_base_url: str, api_timeout: int = 30, max_retries: int = 3):
+        """
+        Инициализация Агента 5
         
-        try:
-            async with self.get_session() as session:
-                # Найдем chat
-                chat_result = await session.execute(
-                    select(Chat).where(Chat.tg_chat_id == str(decision.chat_id))
-                )
-                chat = chat_result.scalar_one_or_none()
-                
-                if not chat:
-                    # Создаем чат, если не существует
-                    chat = Chat(tg_chat_id=str(decision.chat_id))
-                    session.add(chat)
-                    await session.flush()
-                
-                # Проверяем, нет ли уже такого негативного сообщения
-                existing_result = await session.execute(
-                    select(NegativeMessage).where(
-                        NegativeMessage.chat_id == chat.id,
-                        NegativeMessage.sender_username == decision.username
-                    )
-                )
-                existing = existing_result.scalar_one_or_none()
-                
-                if not existing:
-                    negative_msg = NegativeMessage(
-                        chat_id=chat.id,
-                        message_link=f"chat_id:{decision.chat_id}/message_id:{decision.message_id}",
-                        sender_username=decision.username,
-                        negative_reason=decision.reasoning,
-                        is_sent_to_moderators=False
-                    )
-                    
-                    session.add(negative_msg)
-                    await session.commit()
-                    logger.success(f"💾 Агент 5: Негативное сообщение сохранено в БД")
-                    return True
-                
-                return False
-        except Exception as e:
-            logger.error(f"❌ Агент 5: Ошибка сохранения негативного сообщения: {e}")
-            return False
-
-# =========================
-# Telegram Notifier
-# =========================
-class TelegramNotifier:
-    def __init__(self, config: Agent5Config):
-        self.config = config
+        Args:
+            db_config: Конфигурация для подключения к PostgreSQL
+            api_base_url: Базовый URL для REST API
+            api_timeout: Таймаут для HTTP запросов
+            max_retries: Максимальное количество попыток отправки
+        """
+        self.db_config = db_config
+        self.api_base_url = api_base_url
+        self.api_timeout = api_timeout
+        self.max_retries = max_retries
+        
+        # Connection pool для PostgreSQL
+        self.db_pool: Optional[asyncpg.Pool] = None
+        
+        # HTTP сессия для API вызовов
         self.http_session: Optional[aiohttp.ClientSession] = None
+        
+        logger.info("🤖 Агент 5 инициализирован (совместим с готовым Access Token)")
     
-    async def init(self):
-        """Инициализация HTTP сессии"""
-        timeout = aiohttp.ClientTimeout(total=30)
+    async def initialize(self):
+        """Инициализация подключений к БД и HTTP API"""
+        try:
+            # Создаем connection pool для PostgreSQL
+            self.db_pool = await asyncpg.create_pool(**self.db_config, min_size=5, max_size=20, command_timeout=60)
+            logger.info("✅ PostgreSQL connection pool создан")
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания connection pool для PostgreSQL: {e}")
+            raise
+        
+        # Создаем HTTP сессию
+        timeout = aiohttp.ClientTimeout(total=self.api_timeout)
         self.http_session = aiohttp.ClientSession(timeout=timeout)
-        logger.info("📡 Telegram Notifier инициализирован")
+        logger.info("✅ HTTP сессия создана")
     
-    async def close(self):
-        """Закрытие HTTP сессии"""
+    async def cleanup(self):
+        """Очистка ресурсов"""
+        if self.db_pool:
+            await self.db_pool.close()
+            logger.info("🗄️  PostgreSQL connection pool закрыт")
+        
         if self.http_session:
             await self.http_session.close()
-            logger.info("📡 Telegram Notifier закрыт")
+            logger.info("🌐 HTTP сессия закрыта")
     
-    async def send_notification(self, telegram_user_id: int, message: str, max_retries: int = 3) -> bool:
-        """Отправка уведомления модератору"""
-        if not self.http_session:
-            logger.error("❌ HTTP сессия не инициализирована")
-            return False
+    async def process_report(self, report: Agent2Report) -> bool:
+        """
+        Обработка отчета от Агента 2
         
-        url = f"{self.config.TELEGRAM_API_URL}{self.config.TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {
-            'chat_id': telegram_user_id,
-            'text': message,
-            'parse_mode': 'HTML'
-        }
+        Args:
+            report: Отчет от Агента 2
         
-        for attempt in range(1, max_retries + 1):
-            try:
-                async with self.http_session.post(url, json=data) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if result.get('ok'):
-                            logger.success(f"📤 Уведомление отправлено пользователю {telegram_user_id}")
-                            return True
-                        else:
-                            logger.error(f"❌ Telegram API ошибка: {result.get('description')}")
-                    elif response.status >= 500:
-                        # Серверная ошибка - retry
-                        logger.warning(f"⚠️ Серверная ошибка {response.status}, повтор {attempt}/{max_retries}")
-                        if attempt < max_retries:
-                            await asyncio.sleep(2 ** attempt)
-                            continue
-                    else:
-                        # Клиентская ошибка
-                        error_text = await response.text()
-                        logger.error(f"❌ Ошибка отправки уведомления {response.status}: {error_text}")
-                        return False
-            except Exception as e:
-                logger.error(f"❌ Исключение при отправке уведомления (попытка {attempt}): {e}")
-                if attempt < max_retries:
-                    await asyncio.sleep(2 ** attempt)
-                    continue
+        Returns:
+            bool: True если отчет успешно обработан
+        """
+        logger.info(f"📋 Обрабатываем отчет {report.report_id} от Агента 2")
         
-        return False
-
-# =========================
-# Основной Агент №5
-# =========================
-class ChatAgent5:
-    def __init__(self):
-        self.config = Agent5Config()
-        self.db = Agent5DatabaseManager(self.config)
-        self.telegram = TelegramNotifier(self.config)
-        self.processed_count = 0
-        self.start_time = datetime.now()
-        logger.info("🚀 Чат-агент №5 инициализирован")
-    
-    async def init(self):
-        """Инициализация агента"""
-        await self.db.init_database()
-        await self.telegram.init()
-        logger.success("✅ Агент №5 полностью инициализирован")
-    
-    async def close(self):
-        """Закрытие агента"""
-        await self.db.close_database()
-        await self.telegram.close()
-        logger.info("👋 Агент №5 закрыт")
-    
-    def parse_agent_verdict(self, agent_data: Dict[str, Any]) -> AgentVerdict:
-        """Парсинг вердикта агента"""
-        return AgentVerdict(
-            agent_id=agent_data.get("agent_id", 0),
-            ban=agent_data.get("ban", False),
-            reason=agent_data.get("reason", ""),
-            confidence=agent_data.get("confidence", 0.5),
-            timestamp=datetime.now()
-        )
-    
-    def has_conflict(self, agent3: AgentVerdict, agent4: AgentVerdict) -> bool:
-        """Проверка наличия конфликта между агентами"""
-        # Конфликт если вердикты разные или уверенность низкая
-        verdicts_differ = agent3.ban != agent4.ban
-        low_confidence = agent3.confidence < 0.7 or agent4.confidence < 0.7
-        return verdicts_differ or low_confidence
-    
-    def resolve_conflict(self, agent3: AgentVerdict, agent4: AgentVerdict, message_text: str) -> tuple[VerdictType, float, str]:
-        """Разрешение конфликта между агентами"""
-        logger.info("🔍 Разрешение конфликта между агентами...")
-        
-        # Взвешенная оценка по уверенности
-        weight3 = agent3.confidence
-        weight4 = agent4.confidence
-        
-        # Если один агент значительно увереннее другого
-        if weight3 > 0.8 and weight4 < 0.6:
-            verdict = VerdictType.BAN if agent3.ban else VerdictType.APPROVE
-            confidence = agent3.confidence * 0.9
-            reasoning = f"Конфликт разрешен в пользу Агента №3 (уверенность {weight3:.2f}). {agent3.reason}"
-        elif weight4 > 0.8 and weight3 < 0.6:
-            verdict = VerdictType.BAN if agent4.ban else VerdictType.APPROVE
-            confidence = agent4.confidence * 0.9
-            reasoning = f"Конфликт разрешен в пользу Агента №4 (уверенность {weight4:.2f}). {agent4.reason}"
-        else:
-            # Применяем собственный анализ (упрощенный)
-            # В реальности здесь может быть третья модель ИИ
-            spam_keywords = ['купить', 'скидка', 'заработок', 'кликай', 'переходи', 'вступай']
-            toxic_keywords = ['дурак', 'идиот', 'ненавижу', 'хуй', 'блять']
+        try:
+            # 1. Принимаем финальное решение
+            decision = await self.make_decision(report)
+            logger.info(f"⚖️  Финальное решение: {decision.final_verdict.value}")
             
-            message_lower = message_text.lower()
-            spam_count = sum(1 for keyword in spam_keywords if keyword in message_lower)
-            toxic_count = sum(1 for keyword in toxic_keywords if keyword in message_lower)
+            # 2. Получаем модератора для этого чата
+            moderator = await self.get_moderator(report.chat_id)
+            if not moderator:
+                logger.error(f"❌ Не найден модератор для чата {report.chat_id}")
+                return False
             
-            if toxic_count > 0:
-                verdict = VerdictType.BAN
-                confidence = 0.75
-                reasoning = f"Конфликт разрешен собственным анализом: обнаружены токсичные слова ({toxic_count})"
-            elif spam_count >= 2:
-                verdict = VerdictType.BAN
-                confidence = 0.70
-                reasoning = f"Конфликт разрешен собственным анализом: вероятный спам ({spam_count} спам-маркеров)"
+            logger.info(f"👤 Найден модератор: @{moderator.username}")
+            
+            # 3. Отправляем уведомление модератору через REST API
+            success = await self.send_to_moderator(decision, moderator)
+            if success:
+                logger.info(f"✅ Уведомление отправлено модератору @{moderator.username}")
             else:
-                verdict = VerdictType.APPROVE
-                confidence = 0.65
-                reasoning = "Конфликт разрешен собственным анализом: сообщение выглядит безопасным"
-        
-        logger.info(f"⚖️ Конфликт разрешен: {verdict.value} (уверенность: {confidence:.2f})")
-        return verdict, confidence, reasoning
+                logger.error(f"❌ Не удалось отправить уведомление модератору")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки отчета: {e}", exc_info=True)
+            return False
     
-    def make_decision(self, agent3: AgentVerdict, agent4: AgentVerdict, message_data: Dict[str, Any]) -> Agent5Decision:
-        """Принятие окончательного решения"""
-        logger.info(f"🤔 Анализ вердиктов: Agent3={'БАН' if agent3.ban else 'НЕ БАНИТЬ'} ({agent3.confidence:.2f}), "
-                   f"Agent4={'БАН' if agent4.ban else 'НЕ БАНИТЬ'} ({agent4.confidence:.2f})")
+    async def make_decision(self, report: Agent2Report) -> Agent5Decision:
+        """
+        Принятие финального решения на основе результатов от Агентов 3 и 4
         
-        has_conflict = self.has_conflict(agent3, agent4)
+        1. Если агенты согласны - принимаем их решение
+        2. Если есть конфликт - используем дополнительную логику
+        3. В крайнем случае передаем решение Агенту 5
+        
+        Args:
+            report: Отчет от Агента 2
+        
+        Returns:
+            Agent5Decision: Финальное решение
+        """
+        agent3 = report.agent3_verdict
+        agent4 = report.agent4_verdict
+        
+        logger.info(f"🔍 Анализируем: Agent3={agent3.verdict.value}({agent3.confidence:.2f}), Agent4={agent4.verdict.value}({agent4.confidence:.2f})")
+        
+        # Проверяем наличие конфликта
+        has_conflict = report.has_conflict()
         
         if not has_conflict:
-            # Вердикты согласованы
-            final_verdict = VerdictType.BAN if agent3.ban else VerdictType.APPROVE
+            # Агенты согласны - принимаем их решение
+            final_verdict = agent3.verdict
             confidence = (agent3.confidence + agent4.confidence) / 2
-            reasoning = (
-                f"Агенты №3 и №4 согласны. Средняя уверенность: {confidence:.2f}. "
-                f"Agent3: {agent3.reason}. Agent4: {agent4.reason}."
-            )
-            logger.info("✅ Конфликта нет, принимаем согласованное решение")
+            reasoning = f"Агенты 3 и 4 согласны. Уверенность: {confidence:.2f}. " \
+                       f"Agent3: {agent3.reasoning}. Agent4: {agent4.reasoning}."
+            logger.info("✅ Агенты согласны, конфликта нет")
         else:
-            # Есть конфликт
-            logger.warning("⚠️ Обнаружен конфликт между агентами!")
-            final_verdict, confidence, reasoning = self.resolve_conflict(
-                agent3, agent4, message_data.get("message", "")
-            )
+            # Есть конфликт - разрешаем его
+            logger.warning("⚠️  Обнаружен конфликт между агентами!")
+            final_verdict, confidence, reasoning = await self.resolve_conflict(report, agent3, agent4)
         
-        decision_id = f"decision_{message_data.get('message_id', 0)}_{int(datetime.now().timestamp())}"
-        
-        return Agent5Decision(
+        # Создаем финальное решение
+        decision_id = f"decision_{report.report_id}_{int(datetime.now().timestamp())}"
+        decision = Agent5Decision(
             decision_id=decision_id,
-            message_id=message_data.get("message_id", 0),
-            chat_id=message_data.get("chat_id", 0),
-            user_id=message_data.get("user_id", 0),
-            username=message_data.get("username", ""),
-            message_text=message_data.get("message", ""),
+            report_id=report.report_id,
             final_verdict=final_verdict,
             confidence=confidence,
             reasoning=reasoning,
-            agent3_verdict=agent3.to_verdict_type(),
-            agent4_verdict=agent4.to_verdict_type(),
+            agent3_verdict=agent3.verdict,
+            agent4_verdict=agent4.verdict,
             was_conflict=has_conflict,
             timestamp=datetime.now()
         )
+        
+        return decision
     
-    async def notify_moderators(self, decision: Agent5Decision) -> bool:
-        """Уведомление модераторов о решении"""
-        if decision.final_verdict != VerdictType.BAN:
-            return True  # Не нужно уведомлять о разрешенных сообщениях
+    async def resolve_conflict(self, report: Agent2Report, agent3: AgentVerdict, agent4: AgentVerdict) -> tuple[VerdictType, float, str]:
+        """
+        Разрешение конфликта между Агентами 3 и 4
         
-        moderators = await self.db.get_chat_moderators(decision.chat_id)
+        1. Анализируем уверенность агентов
+        2. Используем дополнительные эвристики
+        3. В крайнем случае применяем логику Агента 5
         
-        if not moderators:
-            logger.warning(f"⚠️ Модераторы для чата {decision.chat_id} не найдены")
-            return False
+        Args:
+            report: Отчет
+            agent3: Решение Агента 3
+            agent4: Решение Агента 4
         
-        # Формируем уведомление
-        notification = (
-            f"🚨 <b>Обнаружено нарушение!</b>\n\n"
-            f"👤 <b>Пользователь:</b> {decision.username}\n"
-            f"💬 <b>Сообщение:</b> {decision.message_text[:200]}{'...' if len(decision.message_text) > 200 else ''}\n"
-            f"⚖️ <b>Решение:</b> {decision.final_verdict.value.upper()}\n"
-            f"🎯 <b>Уверенность:</b> {decision.confidence:.1%}\n"
-            f"📝 <b>Причина:</b> {decision.reasoning[:300]}{'...' if len(decision.reasoning) > 300 else ''}\n"
-            f"🤖 <b>Agent3:</b> {decision.agent3_verdict.value}, <b>Agent4:</b> {decision.agent4_verdict.value}\n"
-            f"⚡ <b>Конфликт:</b> {'Да' if decision.was_conflict else 'Нет'}"
+        Returns:
+            tuple: (финальный_вердикт, уверенность, обоснование)
+        """
+        logger.info("🔧 Разрешаем конфликт между агентами...")
+        
+        # Анализируем сообщение с помощью эвристики Агента 5
+        message_analysis = await self.analyze_message(report.message_text) 
+        
+        # Взвешиваем решения агентов по уверенности
+        weight3 = agent3.confidence
+        weight4 = agent4.confidence
+        
+        # Если один агент очень уверен, а другой нет
+        if weight3 > 0.8 and weight4 < 0.6:
+            final_verdict = agent3.verdict
+            confidence = agent3.confidence * 0.9
+            reasoning = f"Приоритет Агенту 3 (уверенность {weight3:.2f}). {agent3.reasoning}"
+        elif weight4 > 0.8 and weight3 < 0.6:
+            final_verdict = agent4.verdict
+            confidence = agent4.confidence * 0.9
+            reasoning = f"Приоритет Агенту 4 (уверенность {weight4:.2f}). {agent4.reasoning}"
+        else:
+            # Используем анализ Агента 5
+            final_verdict = message_analysis['verdict']
+            confidence = message_analysis['confidence']
+            reasoning = f"Решение Агента 5 из-за конфликта. Agent3: {agent3.verdict.value} ({weight3:.2f}), Agent4: {agent4.verdict.value} ({weight4:.2f}). {message_analysis['reason']}"
+        
+        logger.info(f"⚖️  Конфликт разрешен: {final_verdict.value} (уверенность: {confidence:.2f})")
+        return final_verdict, confidence, reasoning
+    
+    async def analyze_message(self, message_text: str) -> Dict[str, Any]:
+        """
+        Анализ сообщения силами Агента 5.
+        Простая эвристика для разрешения конфликтов.
+        
+        - Может быть заменена на ML модель
+        - Может использовать готовый Access Token при необходимости
+        - Может анализировать дополнительные факторы
+        
+        Args:
+            message_text: Текст сообщения
+        
+        Returns:
+            dict: {'verdict': VerdictType, 'confidence': float, 'reason': str}
+        """
+        # Простые ключевые слова для анализа
+        spam_keywords = ['дешево', 'скидка', 'купи', 'продаж', 'реклам', 'заработок', 'акция']
+        toxic_keywords = ['идиот', 'дурак', 'тупой', 'урод', 'козёл']
+        profanity_keywords = ['бля', 'хуй', 'пизд', 'ебал']
+        
+        message_lower = message_text.lower()
+        
+        spam_count = sum(1 for keyword in spam_keywords if keyword in message_lower)
+        toxic_count = sum(1 for keyword in toxic_keywords if keyword in message_lower)
+        profanity_count = sum(1 for keyword in profanity_keywords if keyword in message_lower)
+        
+        if profanity_count > 0:
+            return {
+                'verdict': VerdictType.BAN,
+                'confidence': 0.85,
+                'reason': f"Обнаружен мат: {profanity_count} слов"
+            }
+        elif toxic_count > 0:
+            return {
+                'verdict': VerdictType.WARNING,
+                'confidence': 0.75,
+                'reason': f"Обнаружены токсичные слова: {toxic_count}"
+            }
+        elif spam_count >= 2:
+            return {
+                'verdict': VerdictType.REJECT,
+                'confidence': 0.70,
+                'reason': f"Вероятный спам - найдено ключевых слов: {spam_count}"
+            }
+        else:
+            return {
+                'verdict': VerdictType.APPROVE,
+                'confidence': 0.65,
+                'reason': "Сообщение прошло базовую проверку Агента 5"
+            }
+    
+    async def get_moderator(self, chat_id: int) -> Optional[ModeratorInfo]:
+        """
+        Получение модератора для чата из PostgreSQL
+        
+        Args:
+            chat_id: ID чата Telegram
+        
+        Returns:
+            ModeratorInfo или None если модератор не найден
+        """
+        if not self.db_pool:
+            raise RuntimeError("Database pool не инициализирован")
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Ищем активного модератора для чата, упорядоченного по приоритету
+                query = """
+                    SELECT m.id as moderator_id, m.telegram_id, m.username, m.is_active, m.api_endpoint
+                    FROM moderators m 
+                    JOIN chat_moderators cm ON m.id = cm.moderator_id 
+                    WHERE cm.chat_id = $1 AND m.is_active = true 
+                    ORDER BY m.priority DESC 
+                    LIMIT 1
+                """
+                
+                row = await conn.fetchrow(query, chat_id)
+                
+                if row:
+                    moderator = ModeratorInfo(
+                        moderator_id=row['moderator_id'],
+                        telegram_id=row['telegram_id'],
+                        username=row['username'],
+                        is_active=row['is_active'],
+                        api_endpoint=row.get('api_endpoint')
+                    )
+                    logger.info(f"👤 Найден модератор: @{moderator.username}")
+                    return moderator
+                else:
+                    logger.warning(f"⚠️  Не найден активный модератор для чата {chat_id}")
+                    return None
+                    
+        except asyncpg.PostgresError as e:
+            logger.error(f"❌ Ошибка PostgreSQL: {e}", exc_info=True)
+            return None
+        except Exception as e:
+            logger.error(f"❌ Неожиданная ошибка: {e}", exc_info=True)
+            return None
+    
+    async def send_to_moderator(self, decision: Agent5Decision, moderator: ModeratorInfo) -> bool:
+        """
+        Отправка уведомления модератору через REST API с retry логикой
+        
+        Args:
+            decision: Финальное решение
+            moderator: Информация о модераторе
+        
+        Returns:
+            bool: True если уведомление отправлено успешно
+        """
+        if not self.http_session:
+            # HTTP сессия не инициализирована
+            raise RuntimeError("HTTP session не инициализирована")
+        
+        # Определяем endpoint для отправки
+        if moderator.api_endpoint:
+            url = moderator.api_endpoint
+        else:
+            url = f"{self.api_base_url}/moderator/{moderator.moderator_id}/verdict"
+        
+        # Формируем payload для API
+        payload = {
+            'decision': asdict(decision),
+            'moderator_id': moderator.moderator_id, 
+            'telegram_id': moderator.telegram_id,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': 'TelegramModerationBot-Agent5/1.0'
+        }
+        
+        # Retry логика
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                logger.info(f"🌐 Попытка {attempt}/{self.max_retries}: отправляем в {url}")
+                
+                async with self.http_session.post(url, json=payload, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        logger.info(f"✅ API ответ: {result}")
+                        return True
+                    elif response.status >= 500:
+                        # Серверные ошибки - можно retry
+                        logger.warning(f"⚠️  Серверная ошибка {response.status}, попытка повтора...")
+                        if attempt < self.max_retries:
+                            await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                            continue
+                    else:
+                        # Клиентские ошибки - не retry
+                        error_text = await response.text()
+                        logger.error(f"❌ Ошибка API {response.status}: {error_text}")
+                        return False
+                        
+            except aiohttp.ClientError as e:
+                logger.error(f"❌ HTTP клиентская ошибка (попытка {attempt}): {e}")
+                if attempt < self.max_retries:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+            except asyncio.TimeoutError:
+                logger.error(f"⏰ Таймаут запроса (попытка {attempt})")
+                if attempt < self.max_retries:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+            except Exception as e:
+                logger.error(f"❌ Неожиданная ошибка: {e}", exc_info=True)
+                return False
+        
+        logger.error(f"❌ Исчерпаны все {self.max_retries} попытки отправки")
+        return False
+
+# === MAIN ФУНКЦИЯ ===
+async def main():
+    """Главная функция для тестирования Агента 5"""
+    
+    # Конфигурация PostgreSQL
+    db_config = {
+        'host': os.getenv('DB_HOST', '176.108.248.211'),
+        'port': int(os.getenv('DB_PORT', 5432)),
+        'user': os.getenv('DB_USER', 'tguser'),
+        'password': os.getenv('DB_PASSWORD', 'mnvm7110'),
+        'database': os.getenv('DB_NAME', 'teleguard_db')
+    }
+    
+    # Базовый URL для REST API
+    api_base_url = os.getenv('API_BASE_URL', 'http://localhost:8000/api/v1')
+    
+    # Создаем экземпляр Агента 5
+    agent = Agent5(
+        db_config=db_config,
+        api_base_url=api_base_url,
+        api_timeout=30,
+        max_retries=3
+    )
+    
+    try:
+        await agent.initialize()
+        logger.info("🚀 Агент 5 инициализирован")
+        
+        # Тестовый отчет
+        test_report = Agent2Report(
+            report_id="report_12345",
+            message_id=98765,
+            chat_id=-1001234567890,
+            user_id=123456789,
+            message_text="Купите дешевые айфоны! Скидки!!!",
+            agent3_verdict=AgentVerdict(
+                agent_id=3,
+                verdict=VerdictType.REJECT,
+                confidence=0.85,
+                reasoning="Обнаружена реклама - запрещено",
+                timestamp=datetime.now()
+            ),
+            agent4_verdict=AgentVerdict(
+                agent_id=4,
+                verdict=VerdictType.WARNING,
+                confidence=0.65,
+                reasoning="Подозрительное сообщение, но не критично",
+                timestamp=datetime.now()
+            ),
+            is_conflicting=True,
+            metadata={}
         )
         
-        success_count = 0
-        for moderator in moderators:
-            if moderator.get("telegram_user_id"):
-                success = await self.telegram.send_notification(
-                    moderator["telegram_user_id"], notification
-                )
-                if success:
-                    success_count += 1
+        # Обрабатываем тестовый отчет
+        # Здесь можно добавить логику получения отчетов из RabbitMQ, Kafka и т.д.
+        success = await agent.process_report(test_report)
         
-        logger.info(f"📤 Уведомления отправлены {success_count}/{len(moderators)} модераторам")
-        return success_count > 0
-    
-    async def process_agent_reports(self, agent3_data: Dict[str, Any], agent4_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Обработка отчетов от агентов 3 и 4"""
-        try:
-            # Парсим вердикты
-            agent3 = self.parse_agent_verdict(agent3_data)
-            agent4 = self.parse_agent_verdict(agent4_data)
-            
-            # Принимаем решение
-            decision = self.make_decision(agent3, agent4, agent3_data)
-            
-            # Сохраняем негативное сообщение, если нужно
-            if decision.final_verdict == VerdictType.BAN:
-                await self.db.save_negative_message(decision)
-            
-            # Уведомляем модераторов
-            notification_sent = await self.notify_moderators(decision)
-            
-            self.processed_count += 1
-            
-            result = {
-                "status": "processed",
-                "decision": decision.to_dict(),
-                "notification_sent": notification_sent
-            }
-            
-            logger.success(f"✅ Агент 5: Решение принято - {decision.final_verdict.value}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"❌ Агент 5: Ошибка обработки отчетов: {e}")
-            return {"status": "error", "reason": str(e)}
-    
-    def get_health_metrics(self) -> Dict[str, Any]:
-        uptime = datetime.now() - self.start_time
-        return {
-            "agent_id": 5,
-            "status": "healthy",
-            "uptime_seconds": int(uptime.total_seconds()),
-            "processed_decisions": self.processed_count,
-            "database_connected": self.db.engine is not None,
-            "telegram_ready": self.telegram.http_session is not None,
-        }
-
-# =========================
-# Тестирование
-# =========================
-async def test_agent_5():
-    """Тест агента 5"""
-    logger.info("=== ТЕСТ АГЕНТА 5 ===")
-    
-    agent = ChatAgent5()
-    await agent.init()
-    
-    # Тестовые данные от агентов 3 и 4
-    agent3_data = {
-        "agent_id": 3,
-        "ban": True,
-        "reason": "Вердикт: да. Причина: Обнаружена реклама стороннего сообщества",
-        "message": "Вступайте в наш чат @spamchannel!",
-        "user_id": 123456789,
-        "username": "@test_user",
-        "chat_id": -1001234567890,
-        "message_id": 42,
-        "confidence": 0.85,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    agent4_data = {
-        "agent_id": 4,
-        "ban": False,
-        "reason": "Нарушений не обнаружено. Сообщение соответствует правилам чата.",
-        "message": "Вступайте в наш чат @spamchannel!",
-        "user_id": 123456789,
-        "username": "@test_user",
-        "chat_id": -1001234567890,
-        "message_id": 42,
-        "confidence": 0.70,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    result = await agent.process_agent_reports(agent3_data, agent4_data)
-    
-    logger.info("Результат:")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    
-    await agent.close()
-
-# =========================
-# Точка входа
-# =========================
-async def main():
-    """Основная функция"""
-    agent = ChatAgent5()
-    try:
-        await agent.init()
-        logger.info("🚀 Агент №5 готов к работе")
+        if success:
+            logger.info("✅ Тестовый отчет успешно обработан")
+        else:
+            logger.error("❌ Ошибка обработки тестового отчета")
         
-        # В реальности здесь был бы цикл получения данных от агентов 3 и 4
-        # через Redis или другую систему очередей
-        while True:
-            await asyncio.sleep(1)
-            # Здесь должна быть логика получения отчетов от агентов
-            
     except KeyboardInterrupt:
-        logger.info("🛑 Получен сигнал остановки")
+        logger.info("⏹️  Получен сигнал остановки")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
     finally:
-        await agent.close()
+        await agent.cleanup()
+        logger.info("👋 Агент 5 завершил работу")
 
 if __name__ == "__main__":
-    import sys
+    print("=" * 60)
+    print("🔧 АГЕНТ №5 - ГОТОВЫЙ ACCESS TOKEN")
+    print("=" * 60)
+    print("🤖 Финальный координатор решений")
+    print("🔑 Совместим с готовым Access Token")
+    print(f"📏 Длина токена: {len(GIGACHAT_ACCESS_TOKEN)} символов")
+    print("🧪 Поддерживает проверку из Telegram бота")
+    print()
+    print("✨ Возможности:")
+    print("   • Анализ решений от Агентов 3 и 4")
+    print("   • Разрешение конфликтов между агентами")
+    print("   • Отправка уведомлений модераторам")
+    print("   • PostgreSQL интеграция")
+    print("   • REST API коммуникация")
+    print()
+    print("📝 Хотя Агент 5 не использует ГигаЧат напрямую,")
+    print("    он совместим с обновленной архитектурой")
+    print()
+    print("🚀 Запускаем Агент 5...")
+    print("=" * 60)
     
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        asyncio.run(test_agent_5())
-    else:
+    try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("⏹️  Программа остановлена пользователем")

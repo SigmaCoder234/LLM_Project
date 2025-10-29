@@ -1,488 +1,432 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-=============================================================================
-ЧАТ-АГЕНТ №3 с PostgreSQL - Модератор (GigaChat)
-=============================================================================
-- Использует модели БД из first_agent.py  
-- Интеграция с PostgreSQL через SQLAlchemy ORM
-- GigaChat для анализа нарушений
-- Redis для получения задач от агента 2
-=============================================================================
+АГЕНТ №3 с GigaChat - Модерация контента (ГОТОВЫЙ ACCESS TOKEN)
 """
 
-import asyncio
+import requests
 import json
-import os
-import time
-import uuid
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-import httpx
 import redis
-from loguru import logger
+import time
+from typing import Dict, Any
 
-# SQLAlchemy imports - используем те же модели что и в первом агенте
-from sqlalchemy import create_engine, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.sql import func
+# === НАСТРОЙКИ (ГОТОВЫЙ ACCESS TOKEN) ===
+# ГигаЧат настройки - ГОТОВЫЙ ACCESS TOKEN
+GIGACHAT_ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.tvaS8A1YHU924PE0rt1oMkE_L336Z8K6IR2Hnli0Uo6En18sm_Z9oXC8GIL2GOoGe5kjVXNt76u1U9y4oh1OTT4MNUP__Em11DJE_wwjannYvUT3vsB8mBMSzcczwdbaaHXIihpLBuQn57OrtdEkedXCki94a5zzD4M1kH5JxV5iygd72ay3X1EEWeNKZg3rHY6iP47AIQiKwTCEfM88dhH8eAfGuyw1aFMhcd52NqHP7FtTdlN-7Bg6B9n94JBTkCeoiuicljIpujOXpD51sZXB71oJuEcbbo8ouD1zVKs6b2WNZOgApcD01UMk_B_HDbEOEMW1Wy5eAzQbawba9g.aJuKw2SQ91pqXChZVrkQ-Q.54ys0B80mnvLh0qDubBzlZmfjpPacDDzpMD0JvYKnqkHjWc27PD50fzqf9nKkNePJUxKIH4Nz5__o3c_S9fnOVKWmlzGPgMk6crHFY0SFP-xXURywdFG4wKAodJMHSnDxP_9LvwcokpL4Bmb-I2TsV9VU99QVNj9eZ1v-4_7NTYhu-Ns5836xye8fpvjHHukN4BAdR-UR5X1fXaIdHV1uKImbeI7YsSpPwRgPdWU9z7UKO2CPUJxDbultkyuVr_qenoX3fqK8ns9cbLcu2g3Q7kA-VLg1zZgCK4LaffsatQL1g8cpS_KOOif5zBIC6fbTg4SncyC5UE7Lc6paJVSvV0OkKw4xOHCZNqO6Ab_0lXwD1WbeXIxirnJs-fevhSl2mCQ2oa_UBlUjCzHDpNCibwCw12k5abxVb57LmWX30AGNzKzi796S7G6hOjDgTq242fXnThLFsAMTMGRsQqyvVCVcRIu9EWsT6sB9xq0ikfvsBlsc_bsvC9OsLtfEZsAHFC9wECJA-tuIrNYMmxhbdmKn6Ty-Bd1dd6-HfbRBFTCYOIgLg4Jt4fWThyurldOVdCl7nvm0220MndIMQ46EFVlXJNz9Wkv3TXlAl7m8_hl1IpbnnO_1lQD0uoKIBmcf2KxD2HIo0E-sV-c6REITzg9DKna4_mpRItgAkmgAjXxJgstnLJxISMzYQpe_w4QoWFM-cMuA3uxnQfpw1LMN543b_HB-I9n4mFiYRkO99E.sRM_m5RLwew6bHjt0l5QA9ImiEvKY-eLlM4CWKmav-s"
 
-# Общие модели БД - те же что в first_agent.py и teteguard_bot.py
-from sqlalchemy import Column, Integer, BigInteger, String, Text, Boolean, ForeignKey, DateTime, JSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+# Redis настройки
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_DB = 0
+REDIS_PASSWORD = None  # None если пароль не установлен
 
-Base = declarative_base()
+# Redis очереди
+QUEUE_AGENT3_INPUT = "queue:agent3_input"  # Очередь входящих сообщений для Агента 3
+QUEUE_AGENT3_OUTPUT = "queue:agent3_output"  # Очередь исходящих сообщений от Агента 3
 
-class Chat(Base):
-    __tablename__ = "chats"
-    id = Column(Integer, primary_key=True)
-    tg_chat_id = Column(String, unique=True, nullable=False)
-    messages = relationship('Message', back_populates='chat', cascade="all, delete")
-    moderators = relationship('Moderator', back_populates='chat', cascade="all, delete")
-    negative_messages = relationship('NegativeMessage', back_populates='chat', cascade="all, delete")
-
-class Message(Base):
-    __tablename__ = "messages"
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    sender_username = Column(String)
-    sender_id = Column(BigInteger)
-    message_text = Column(String)
-    message_link = Column(String)
-    created_at = Column(DateTime, default=func.now())
-    chat = relationship('Chat', back_populates='messages')
-
-class Moderator(Base):
-    __tablename__ = "moderators"
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    username = Column(String)
-    telegram_user_id = Column(BigInteger)
-    chat = relationship('Chat', back_populates='moderators')
-
-class NegativeMessage(Base):
-    __tablename__ = "negative_messages"
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    message_link = Column(String)
-    sender_username = Column(String)
-    negative_reason = Column(String)
-    is_sent_to_moderators = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=func.now())
-    chat = relationship('Chat', back_populates='negative_messages')
-
-# =========================
-# Логирование
-# =========================
-from pathlib import Path
-Path("logs").mkdir(exist_ok=True)
-
-logger.remove()
-logger.add(
-    "logs/agent_3_{time:YYYY-MM-DD}.log",
-    rotation="1 day",
-    retention="30 days", 
-    level="INFO",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
-)
-logger.add(lambda msg: print(msg, end=""), level="INFO", format="{time:HH:mm:ss} | {level} | {message}")
-
-# =========================
-# Конфигурация
-# =========================
-class Agent3Config:
-    # PostgreSQL настройки - те же что в teteguard_bot.py
-    POSTGRES_HOST = "176.108.248.211"
-    POSTGRES_PORT = 5432
-    POSTGRES_DB = "teleguard_db" 
-    POSTGRES_USER = "tguser"
-    POSTGRES_PASSWORD = "mnvm7110"
+# === GIGACHAT FUNCTIONS (ГОТОВЫЙ ACCESS TOKEN) ===
+def check_message_with_gigachat(message, rules, prompt, access_token):
+    """
+    Проверка сообщения через GigaChat API с готовым Access Token.
+    Анализирует содержимое сообщения на соответствие правилам чата.
     
-    # Redis настройки
-    REDIS_HOST = "localhost"
-    REDIS_PORT = 6379
-    REDIS_DB = 0
-    REDIS_PASSWORD = None
+    Args:
+        message: Текст сообщения для проверки
+        rules: Список правил чата
+        prompt: Промпт для анализа
+        access_token: Access Token для GigaChat API
     
-    # Очереди Redis
-    QUEUE_INPUT = "queue:agent3:input"
-    QUEUE_OUTPUT = "queue:agent3:output"
+    Returns:
+        str: Ответ от GigaChat или сообщение об ошибке
+    """
+    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
     
-    # GigaChat
-    GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-    GIGACHAT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1"
-    DEFAULT_GIGACHAT_CREDENTIALS = "MDE5YTJhZjEtYjhjOS03OTViLWFlZjEtZTg4MTgxNjQzNzdjOmE0MzRhNjExLTE2NGYtNDdjYS1iNTM2LThlMGViMmU0YzVmNg=="
+    rules_text = "\n".join(rules)
+    system_msg = f"{rules_text}\n{prompt}"
+    user_msg = f"{message}"
     
-    @property
-    def database_url(self) -> str:
-        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+    }
     
-    @property  
-    def sync_database_url(self) -> str:
-        return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+    data = {
+        'model': 'GigaChat',
+        'messages': [
+            {'role': 'system', 'content': system_msg},
+            {'role': 'user', 'content': user_msg}
+        ],
+        'temperature': 0.2,
+        'max_tokens': 256
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, verify=False, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        content = result['choices'][0]['message']['content']
+        return content
+    except Exception as e:
+        error_msg = f"❌ Ошибка GigaChat API: {e}"
+        print(error_msg)
+        return error_msg
 
-# =========================
-# GigaChat Client
-# =========================
-class GigaChatClient:
-    def __init__(self, credentials: str):
-        self.credentials = credentials
-        self.access_token: Optional[str] = None
-        self.token_expires_at: Optional[datetime] = None
-        logger.info("🔧 GigaChat клиент агента 3 инициализирован")
+def parse_gigachat_response(text):
+    """
+    Парсинг ответа GigaChat для определения нарушений.
+    Возвращает решение о блокировке и причину.
+    """
+    text_lower = text.lower()
     
-    async def get_access_token(self) -> str:
-        if (self.access_token and self.token_expires_at and 
-            datetime.now() < self.token_expires_at):
-            return self.access_token
-        
-        payload = {'scope': 'GIGACHAT_API_PERS'}
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept': 'application/json',
-            'RqUID': str(uuid.uuid4()),
-            'Authorization': f'Basic {self.credentials}'
-        }
-        
-        try:
-            async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
-                response = await client.post(Agent3Config.GIGACHAT_AUTH_URL, headers=headers, data=payload)
-                response.raise_for_status()
-                token_data = response.json()
-                
-                self.access_token = token_data['access_token']
-                expires_in = token_data.get('expires_in', 1800)
-                from datetime import timedelta
-                self.token_expires_at = datetime.now() + timedelta(seconds=expires_in - 60)
-                
-                logger.success(f"🔑 Агент 3 получил новый токен GigaChat")
-                return self.access_token
-        except Exception as e:
-            logger.error(f"❌ Агент 3: Ошибка получения токена GigaChat: {e}")
-            raise
+    # Ключевые слова для блокировки
+    ban_keywords = ['запретить', 'заблокировать', 'бан', 'блокировать', 'нарушение']
+    no_ban_keywords = ['разрешить', 'допустимо', 'нормально', 'можно']
     
-    async def moderate_message(self, message_text: str, rules: List[str]) -> Dict[str, Any]:
-        """Модерация сообщения через GigaChat"""
-        token = await self.get_access_token()
-        
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        
-        rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
-        system_prompt = f"""Ты — строгий, но справедливый модератор Telegram-канала.
-        Твоя задача: проанализировать сообщение пользователя и определить, нарушает ли оно правила чата.
-        
-        ИНСТРУКЦИЯ:
-        1. Внимательно изучи сообщение
-        2. Сравни его с каждым правилом
-        3. Если найдено нарушение — укажи конкретное правило и объясни почему
-        4. Если сомневаешься — лучше не банить (презумпция невиновности)
-        5. Будь объективным
-        
-        Правила чата:
-        {rules_text}
-        
-        Ответь СТРОГО в формате: 'Вердикт: да/нет. Причина: [подробное объяснение]'"""
-        
-        payload = {
-            "model": "GigaChat",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Анализируй сообщение: {message_text}"}
-            ],
-            "temperature": 0.2,  # Низкая температура для стабильности
-            "max_tokens": 256,
-            "stream": False,
-        }
-        
-        try:
-            async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
-                response = await client.post(f"{Agent3Config.GIGACHAT_API_URL}/chat/completions", 
-                                           headers=headers, json=payload)
-                response.raise_for_status()
-                result = response.json()
-                
-                if result.get("choices") and len(result["choices"]) > 0:
-                    content = result["choices"][0]["message"]["content"].strip()
-                    
-                    # Парсим ответ GigaChat
-                    content_lower = content.lower()
-                    
-                    # Ключевые слова для определения вердикта
-                    ban_keywords = ["вердикт: да", "нарушение обнаружено", "нарушает правила", "забанить", "блокировать"]
-                    no_ban_keywords = ["вердикт: нет", "нет нарушений", "не нарушает", "правила соблюдены", "нарушений не найдено"]
-                    
-                    ban = False
-                    # Сначала проверяем на отсутствие нарушений (приоритет)
-                    if any(word in content_lower for word in no_ban_keywords):
-                        ban = False
-                    # Затем проверяем на наличие нарушений
-                    elif any(word in content_lower for word in ban_keywords):
-                        ban = True
-                    
-                    return {
-                        "ban": ban,
-                        "reason": content,
-                        "confidence": 0.85 if ban else 0.8
-                    }
-                else:
-                    return {"ban": False, "reason": "Не удалось получить ответ от GigaChat", "confidence": 0.0}
-        except Exception as e:
-            logger.error(f"❌ Агент 3: Ошибка модерации сообщения: {e}")
-            return {"ban": False, "reason": f"Ошибка GigaChat: {str(e)}", "confidence": 0.0}
+    # Анализ ответа
+    ban = False
+    
+    # Проверяем на слова "не блокировать"
+    if any(word in text_lower for word in no_ban_keywords):
+        ban = False
+    # Проверяем на слова "блокировать"
+    elif any(word in text_lower for word in ban_keywords):
+        ban = True
+    
+    return {'ban': ban, 'reason': text.strip()}
 
-# =========================
-# Database Manager
-# =========================
-class Agent3DatabaseManager:
-    def __init__(self, config: Agent3Config):
-        self.config = config
-        self.engine = None
-        self.async_session_factory = None
+def test_access_token(access_token):
+    """
+    Тестирование Access Token
     
-    async def init_database(self):
-        """Инициализация PostgreSQL базы данных"""
-        try:
-            # Создание таблиц синхронно
-            sync_engine = create_engine(self.config.sync_database_url, echo=False)
-            Base.metadata.create_all(sync_engine)
-            sync_engine.dispose()
+    Args:
+        access_token: Access Token для проверки
+    
+    Returns:
+        bool: True если токен работает
+    """
+    test_url = "https://gigachat.devices.sberbank.ru/api/v1/models"
+    
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Accept': 'application/json'
+    }
+    
+    try:
+        print(f"🧪 Тестируем готовый Access Token...")
+        
+        response = requests.get(test_url, headers=headers, verify=False, timeout=15)
+        
+        if response.status_code == 200:
+            models = response.json()
+            print(f"✅ Access Token работает! Доступно моделей: {len(models.get('data', []))}")
+            return True
+        else:
+            print(f"❌ Access Token не работает. Статус: {response.status_code}")
+            print(f"📄 Ответ: {response.text}")
+            return False
             
-            # Создание асинхронного движка PostgreSQL
-            self.engine = create_async_engine(
-                self.config.database_url,
-                echo=False,
-                future=True,
-                pool_pre_ping=True,
-                pool_recycle=3600
-            )
-            
-            self.async_session_factory = async_sessionmaker(
-                self.engine,
-                class_=AsyncSession,
-                expire_on_commit=False
-            )
-            
-            logger.success(f"🗄️ Агент 3: PostgreSQL БД инициализирована")
-        except Exception as e:
-            logger.error(f"❌ Агент 3: Ошибка инициализации PostgreSQL: {e}")
-            raise
-    
-    async def close_database(self):
-        if self.engine:
-            await self.engine.dispose()
-            logger.info("🗄️ Агент 3: Соединение с PostgreSQL закрыто")
-    
-    def get_session(self) -> AsyncSession:
-        if not self.async_session_factory:
-            raise RuntimeError("PostgreSQL database not initialized")
-        return self.async_session_factory()
+    except Exception as e:
+        print(f"❌ Ошибка тестирования токена: {e}")
+        return False
 
-# =========================
-# Redis Worker
-# =========================  
+def moderation_agent3(input_data, access_token: str):
+    """
+    Функция Агента 3 для модерации сообщений с готовым Access Token.
+    
+    Args:
+        input_data (от Агента 2): {
+            'message': 'текст сообщения',
+            'rules': ['правило 1', 'правило 2', ...],
+            'user_id': 12345,  # ID пользователя
+            'username': 'username',  # Имя пользователя
+            'chat_id': -1001234567890,  # ID чата
+            'message_id': 42  # ID сообщения
+        }
+        access_token: Готовый Access Token для GigaChat API
+    
+    Returns:
+        dict: {
+            'agent_id': 3,
+            'ban': True/False,
+            'reason': 'причина решения от Агента 3',
+            'message': 'исходное сообщение',
+            'user_id': 12345,
+            'username': 'username',
+            'chat_id': -1001234567890,
+            'message_id': 42
+        }
+    """
+    
+    # Извлекаем данные
+    message = input_data.get('message', '')
+    rules = input_data.get('rules', [])
+    
+    # Извлекаем метаданные
+    user_id = input_data.get('user_id')
+    username = input_data.get('username')
+    chat_id = input_data.get('chat_id')
+    message_id = input_data.get('message_id')
+    
+    # Базовые проверки
+    if not message:
+        return {
+            'agent_id': 3,
+            'ban': False,
+            'reason': 'Пустое сообщение',
+            'message': '',
+            'user_id': user_id,
+            'username': username,
+            'chat_id': chat_id,
+            'message_id': message_id
+        }
+    
+    if not rules:
+        return {
+            'agent_id': 3,
+            'ban': False,
+            'reason': 'Нет правил для проверки',
+            'message': message,
+            'user_id': user_id,
+            'username': username,
+            'chat_id': chat_id,
+            'message_id': message_id
+        }
+    
+    # Промпт для GigaChat
+    prompt = """
+    Ты — модератор Telegram-чата. Проанализируй сообщение на нарушение правил.
+    Ответь одним словом: "запретить" если сообщение нарушает правила, "разрешить" если нет.
+    1. Если есть реклама, спам, ссылки на подозрительные ресурсы - запретить
+    2. Если есть оскорбления, мат, токсичность - запретить  
+    3. Если есть призывы к нарушению закона - запретить
+    4. Если сообщение нормальное - разрешить
+    5. В сомнительных случаях лучше разрешить.
+    """
+    
+    # Логируем начало обработки Агентом 3
+    print(f"🔍 Агент 3 обрабатывает: '{message[:50]}...' с готовым токеном")
+    
+    # Проверяем сообщение через GigaChat
+    verdict_text = check_message_with_gigachat(message, rules, prompt, access_token)
+    
+    # Парсим ответ GigaChat
+    result = parse_gigachat_response(verdict_text)
+    
+    # Формируем итоговый ответ
+    output = {
+        'agent_id': 3,
+        'ban': result['ban'],
+        'reason': result['reason'],
+        'message': message,
+        # Метаданные
+        'user_id': user_id,
+        'username': username,
+        'chat_id': chat_id,
+        'message_id': message_id
+    }
+    
+    print(f"✅ Агент 3: {'БЛОКИРОВАТЬ' if result['ban'] else 'РАЗРЕШИТЬ'}")
+    return output
+
 class Agent3RedisWorker:
-    def __init__(self, config: Agent3Config):
-        self.config = config
-        self.gigachat = GigaChatClient(
-            os.getenv("GIGACHAT_CREDENTIALS", config.DEFAULT_GIGACHAT_CREDENTIALS)
-        )
-        self.db = Agent3DatabaseManager(config)
-        self.processed_count = 0
+    """
+    Класс для работы Агента 3 с Redis очередями.
+    """
+    
+    def __init__(self, access_token: str, redis_config=None):
+        """
+        Args:
+            access_token: Готовый Access Token для ГигаЧата
+            redis_config: Конфигурация для подключения к Redis
+        """
+        self.access_token = access_token
         
-        # Подключение к Redis
+        # Настройки Redis
+        if redis_config is None:
+            redis_config = {
+                'host': REDIS_HOST,
+                'port': REDIS_PORT,
+                'db': REDIS_DB,
+                'password': REDIS_PASSWORD,
+                'decode_responses': True
+            }
+        
         try:
-            self.redis_client = redis.Redis(
-                host=config.REDIS_HOST,
-                port=config.REDIS_PORT,
-                db=config.REDIS_DB,
-                password=config.REDIS_PASSWORD,
-                decode_responses=True
-            )
+            self.redis_client = redis.Redis(**redis_config)
             self.redis_client.ping()
-            logger.success(f"🔗 Агент 3: Redis подключен {config.REDIS_HOST}:{config.REDIS_PORT}")
+            print(f"✅ Агент 3 подключен к Redis {REDIS_HOST}:{REDIS_PORT}")
         except Exception as e:
-            logger.error(f"❌ Агент 3: Не удалось подключиться к Redis: {e}")
+            print(f"❌ Ошибка подключения к Redis: {e}")
             raise
     
-    async def process_message(self, message_data: str) -> Dict[str, Any]:
-        """Обработка одного сообщения из очереди"""
+    def process_message(self, message_data):
+        """
+        Обработка одного сообщения.
+        
+        Args:
+            message_data: JSON-строка с данными сообщения
+        
+        Returns:
+            dict: Результат обработки
+        """
         try:
-            # Парсим JSON
+            # Парсим данные из Redis
             input_data = json.loads(message_data)
             
-            # Извлекаем данные
-            message = input_data.get("message", "")
-            rules = input_data.get("rules", [])
-            user_id = input_data.get("user_id")
-            username = input_data.get("username")
-            chat_id = input_data.get("chat_id")
-            message_id = input_data.get("message_id")
-            
-            # Валидация
-            if not message:
-                return {
-                    "agent_id": 3,
-                    "ban": False,
-                    "reason": "Ошибка: пустое сообщение",
-                    "message": "",
-                    "user_id": user_id,
-                    "username": username,
-                    "chat_id": chat_id,
-                    "message_id": message_id
-                }
-            
-            if not rules:
-                return {
-                    "agent_id": 3,
-                    "ban": False,
-                    "reason": "Ошибка: правила не переданы",
-                    "message": message,
-                    "user_id": user_id,
-                    "username": username,
-                    "chat_id": chat_id,
-                    "message_id": message_id
-                }
-            
-            logger.info(f"[АГЕНТ 3] Анализирую сообщение: {message[:50]}...")
-            
-            # Модерация через GigaChat
-            moderation_result = await self.gigachat.moderate_message(message, rules)
-            
-            # Формируем результат
-            result = {
-                "agent_id": 3,
-                "ban": moderation_result["ban"],
-                "reason": moderation_result["reason"],
-                "message": message,
-                "user_id": user_id,
-                "username": username,
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "confidence": moderation_result["confidence"],
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            self.processed_count += 1
-            logger.success(f"[АГЕНТ 3] Вердикт: {'БАН' if moderation_result['ban'] else 'НЕ БАНИТЬ'}")
-            
+            # Обрабатываем через модерацию
+            result = moderation_agent3(input_data, self.access_token)
             return result
             
         except json.JSONDecodeError as e:
-            logger.error(f"❌ Агент 3: Невалидный JSON: {e}")
+            print(f"❌ Ошибка парсинга JSON: {e}")
             return {
-                "agent_id": 3,
-                "ban": False,
-                "reason": f"Ошибка парсинга данных: {e}",
-                "message": ""
+                'agent_id': 3,
+                'ban': False,
+                'reason': f'Ошибка JSON: {e}',
+                'message': ''
             }
         except Exception as e:
-            logger.error(f"❌ Агент 3: Ошибка обработки сообщения: {e}")
+            print(f"❌ Ошибка обработки: {e}")
             return {
-                "agent_id": 3,
-                "ban": False,
-                "reason": f"Внутренняя ошибка агента 3: {e}",
-                "message": ""
+                'agent_id': 3,
+                'ban': False,
+                'reason': f'Ошибка Агента 3: {e}',
+                'message': ''
             }
     
-    def send_result(self, result: Dict[str, Any]) -> None:
-        """Отправка результата в выходную очередь"""
+    def send_result(self, result):
+        """
+        Отправка результата в Redis очередь выходных сообщений.
+        
+        Args:
+            result: dict с результатом анализа
+        """
         try:
             result_json = json.dumps(result, ensure_ascii=False)
-            self.redis_client.rpush(self.config.QUEUE_OUTPUT, result_json)
-            logger.success(f"📤 Агент 3: Результат отправлен в {self.config.QUEUE_OUTPUT}")
+            self.redis_client.rpush(QUEUE_AGENT3_OUTPUT, result_json)
+            print(f"📤 Агент 3 отправил результат в {QUEUE_AGENT3_OUTPUT}")
         except Exception as e:
-            logger.error(f"❌ Агент 3: Не удалось отправить результат: {e}")
+            print(f"❌ Ошибка отправки в Redis: {e}")
     
-    async def run(self):
-        """Основной цикл обработки сообщений"""
-        await self.db.init_database()
+    def run(self):
+        """
+        Основной цикл работы Агента 3.
+        Слушает очередь QUEUE_AGENT3_INPUT и обрабатывает сообщения.
+        """
+        print(f"🚀 Агент 3 запущен с готовым Access Token.")
+        print(f"👂 Слушаем очередь: {QUEUE_AGENT3_INPUT}")
+        print(f"📤 Отправляем результаты в: {QUEUE_AGENT3_OUTPUT}")
+        print("⏹️  Остановка: Ctrl+C")
         
-        logger.info(f"🚀 Агент 3 запущен")
-        logger.info(f"📥 Слушаю очередь: {self.config.QUEUE_INPUT}")  
-        logger.info(f"📤 Отправляю в очередь: {self.config.QUEUE_OUTPUT}")
-        logger.info("🛑 Нажмите Ctrl+C для остановки\n")
+        while True:
+            try:
+                # Блокирующее чтение из очереди (timeout 1 сек)
+                result = self.redis_client.blpop(QUEUE_AGENT3_INPUT, timeout=1)
+                
+                if result is None:
+                    # Если BLPOP вернул None, значит таймаут истек
+                    continue
+                    
+                queue_name, message_data = result
+                print(f"📨 Агент 3 получил сообщение из {queue_name}")
+                
+                # Обрабатываем сообщение
+                output = self.process_message(message_data)
+                
+                # Отправляем результат
+                self.send_result(output)
+                
+                print(f"✅ Агент 3 завершил обработку")
+                
+            except KeyboardInterrupt:
+                print("\n🛑 Агент 3 остановлен (Ctrl+C)")
+                break
+            except Exception as e:
+                print(f"❌ Ошибка: {e}")
+                time.sleep(1)
         
-        try:
-            while True:
-                try:
-                    # Блокирующее чтение из очереди (timeout=1 секунда)
-                    result = self.redis_client.blpop(self.config.QUEUE_INPUT, timeout=1)
-                    
-                    if result is None:
-                        # Таймаут, продолжаем ждать
-                        continue
-                    
-                    queue_name, message_data = result
-                    logger.info(f"\n📨 Агент 3: Получено новое сообщение из {queue_name}")
-                    
-                    # Обрабатываем сообщение
-                    output = await self.process_message(message_data)
-                    
-                    # Отправляем результат
-                    self.send_result(output)
-                    
-                    logger.info(f"✅ Агент 3: Обработка завершена (всего: {self.processed_count})\n")
-                    
-                except KeyboardInterrupt:
-                    logger.info("\n🛑 Агент 3: Получен сигнал остановки")
-                    break
-                except Exception as e:
-                    logger.error(f"❌ Агент 3: Неожиданная ошибка: {e}")
-                    await asyncio.sleep(1)
-                    
-        finally:
-            await self.db.close_database()
-            logger.info("👋 Агент 3 остановлен")
+        print("👋 Агент 3 завершил работу")
 
-# =========================
-# Тестирование
-# =========================
-async def test_agent_3():
-    """Локальный тест агента 3"""
-    logger.info("=== ТЕСТ АГЕНТА 3 ===")
-    
-    config = Agent3Config()
-    worker = Agent3RedisWorker(config)
+def test_agent3_local():
+    """Тест работы Агента 3 без Redis."""
+    print("🧪 Тестирование Агента 3 БЕЗ REDIS")
     
     # Тестовые данные
-    test_data = {
-        "message": "Вступайте в наш чат! 🎉 Только у нас крутые предложения!",
-        "rules": [
-            "Запрещена реклама сторонних сообществ",
-            "Запрещён флуд и спам",
-            "Запрещены оскорбления участников"
-        ],
-        "user_id": 123456789,
-        "username": "@test_user",
-        "chat_id": -1001234567890,
-        "message_id": 42
+    test_input = {
+        'message': 'Купите дешевые айфоны! Скидки!!!',
+        'rules': ['Запрещена реклама', 'Запрещен спам', 'Запрещены ссылки'],
+        'user_id': 123456789,
+        'username': 'testuser',
+        'chat_id': -1001234567890,
+        'message_id': 42
     }
     
-    test_json = json.dumps(test_data, ensure_ascii=False)
-    result = await worker.process_message(test_json)
+    # Тестируем Агент 3
+    result = moderation_agent3(test_input, GIGACHAT_ACCESS_TOKEN)
     
-    logger.info("Результат:")
+    # Выводим результат
+    print("📊 Результат Агента 3:")
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
-# =========================
-# Точка входа
-# =========================
-async def main():
-    config = Agent3Config()
-    worker = Agent3RedisWorker(config)
-    await worker.run()
+def test_agent3_with_redis():
+    """Тест работы Агента 3 С Redis."""
+    print("🧪 Тестирование Агента 3 С REDIS")
+    
+    # Подключаемся к Redis
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, password=REDIS_PASSWORD, decode_responses=True)
+    
+    # Тестовые данные
+    test_input = {
+        'message': 'Привет всем! Как дела?',
+        'rules': ['Запрещена реклама', 'Запрещен спам'],
+        'user_id': 987654321,
+        'username': 'normaluser',
+        'chat_id': -1009876543210,
+        'message_id': 100
+    }
+    
+    # Отправляем в очередь
+    test_json = json.dumps(test_input, ensure_ascii=False)
+    r.rpush(QUEUE_AGENT3_INPUT, test_json)
+    print(f"📤 Тестовое сообщение отправлено в {QUEUE_AGENT3_INPUT}")
+    
+    print("🔄 Теперь запустите: python third_agent.py")
+    print(f"📥 Результат будет в очереди: {QUEUE_AGENT3_OUTPUT}")
 
 if __name__ == "__main__":
     import sys
     
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        asyncio.run(test_agent_3())
+    print("=" * 60)
+    print("🔧 АГЕНТ №3 - ГОТОВЫЙ ACCESS TOKEN")
+    print("=" * 60)
+    print("🔑 Access Token встроен в код")
+    print(f"📏 Длина токена: {len(GIGACHAT_ACCESS_TOKEN)} символов")
+    print("🧪 Поддерживает проверку из Telegram бота")
+    print()
+    
+    # Проверяем токен
+    if not test_access_token(GIGACHAT_ACCESS_TOKEN):
+        print("❌ Access Token не работает! Проверьте токен.")
+        exit(1)
+    
+    # Проверяем аргументы командной строки
+    if len(sys.argv) > 1:
+        mode = sys.argv[1]
+        
+        if mode == "test":
+            # Локальный тест без Redis
+            test_agent3_local()
+        elif mode == "send-test":
+            # Отправка тестового сообщения в Redis
+            test_agent3_with_redis()
+        else:
+            print("❓ Неизвестный режим.")
+            print("python third_agent.py - запуск Агента 3")
+            print("python third_agent.py test - локальный тест без Redis")  
+            print("python third_agent.py send-test - отправка тестового сообщения в Redis")
     else:
-        asyncio.run(main())
+        # Основной режим работы с Redis
+        print("🚀 Запускаем Агент 3 с готовым Access Token...")
+        print("=" * 60)
+        worker = Agent3RedisWorker(access_token=GIGACHAT_ACCESS_TOKEN)
+        worker.run()
