@@ -130,7 +130,7 @@ CREATE TABLE negative_messages (
 ```bash
 # Клонирование репозитория
 git clone <repository-url>
-cd teleguard_project
+cd LLM_project
 
 # Создание виртуального окружения
 python3 -m venv venv
@@ -199,34 +199,6 @@ sudo systemctl enable redis-server
 # Проверка работы
 redis-cli ping
 # Должно вернуть: PONG
-```
-
-### 6. Создание .env файла:
-
-```env
-# PostgreSQL
-POSTGRES_HOST=176.108.248.211
-POSTGRES_PORT=5432
-POSTGRES_DB=teleguard_db
-POSTGRES_USER=tguser
-POSTGRES_PASSWORD=mnvm7110
-
-# Telegram Bot
-TELEGRAM_BOT_TOKEN=8320009669:AAHiVLu-Em8EOXBNHYrJ0UhVX3mMMTm8S_g
-
-# GigaChat API
-GIGACHAT_CREDENTIALS=MDE5YTJhZjEtYjhjOS03OTViLWFlZjEtZTg4MTgxNjQzNzdjOmE0MzRhNjExLTE2NGYtNDdjYS1iNTM2LThlMGViMmU0YzVmNg==
-
-# Redis
-REDIS_URL=redis://localhost:6379
-
-# API настройки
-API_HOST=0.0.0.0
-AGENT_1_PORT=8001
-AGENT_2_PORT=8002
-AGENT_3_PORT=8003
-AGENT_4_PORT=8004
-AGENT_5_PORT=8005
 ```
 
 ## Запуск системы
@@ -493,67 +465,7 @@ redis-cli FLUSHALL
 sudo -u postgres psql teleguard_db -c "\dt"
 ```
 
-## Производительность
-
-### Рекомендуемые настройки для production:
-
-1. **PostgreSQL:**
-```sql
--- postgresql.conf
-shared_buffers = 256MB
-effective_cache_size = 1GB  
-work_mem = 4MB
-max_connections = 100
-```
-
-2. **Redis:**
-```conf
-# redis.conf
-maxmemory 512mb
-maxmemory-policy allkeys-lru
-```
-
-3. **Python/FastAPI:**
-```python
-# Для каждого агента
-workers = 4  # Количество worker процессов
-max_requests = 1000
-timeout = 30
-```
-
-### Метрики производительности:
-- **Пропускная способность:** до 10,000 сообщений/час
-- **Время отклика:** < 500ms на сообщение  
-- **Точность модерации:** 85-95% (зависит от настройки правил)
-- **Потребление RAM:** ~2GB для всей системы
-- **Потребление CPU:** 10-30% при средней нагрузке
-
-## Разработка и вклад
-
-### Структура кода:
-- Все агенты используют общие модели БД
-- Логирование через Loguru с ротацией
-- Асинхронное программирование везде где возможно
-- Type hints для всех функций
-- Docstrings в формате Google Style
-
-### Добавление нового агента:
-1. Создайте новый файл `sixth_agent.py`
-2. Используйте общие модели из `first_agent.py`
-3. Добавьте логирование и health check endpoints
-4. Обновите документацию
-5. Добавьте тесты
-
-## Лицензия
-
-MIT License - см. файл LICENSE
-
-## Контакты
-
 - **Автор:** TeleGuard Team
-- **Email:** support@teleguard.bot
-- **GitHub:** https://github.com/teleguard/teleguard-bot
-- **Документация:** https://docs.teleguard.bot
 
 ---
 
