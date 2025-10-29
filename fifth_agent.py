@@ -25,7 +25,7 @@ logger = logging.getLogger('Agent5')
 
 # === НАСТРОЙКИ (ГОТОВЫЙ ACCESS TOKEN) ===
 # ГигаЧат настройки - ГОТОВЫЙ ACCESS TOKEN (на случай если понадобится)
-from token inport TOKEN
+from token import TOKEN
 GIGACHAT_ACCESS_TOKEN = TOKEN
 # === ENUM И DATACLASS ===
 class VerdictType(Enum):
