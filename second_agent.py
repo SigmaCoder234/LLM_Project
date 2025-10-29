@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №2 — Анализатор и распределитель (Исправленная версия)
+АГЕНТ №2 — Анализатор и распределитель (Обновленные токены)
 """
 
 import requests
@@ -38,10 +38,10 @@ logger = logging.getLogger(__name__)
 POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
 
 # ============================================================================
-# КОНФИГУРАЦИЯ GIGACHAT
+# КОНФИГУРАЦИЯ GIGACHAT (ОБНОВЛЕННЫЕ ТОКЕНЫ)
 # ============================================================================
-ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.cv8YybaNK-3R-ALyaWB-AY1LGRKY8SBOguCeMJBYw4lYG9hdr8TS9nzY2xzOfMP0vX7jKrQ3rqxLOgj8IoDjxD9UL3HZlO1jhH75DoxvU68jHA0_5w_WNr6A82d3qvm2-2bdNkUp9eGwblY4I56eKdodRjJ2vscy9GrITu1lOPgzqP0ZI7D8wt_mqQyZjPEyMhmBqZcW7rExwN8ILaU36KysispjvBHZWKAcF77F4WOvmN0VAbs1ifmHUkWZY3g9gTJdpET2IP0k6u5i78rIX58eOTkCosIG19Il4byFf20GcluSMpKAZkdFXTkK6LBDQK-CD18-ZGCsMWaKthWFWg.My7TQEvIVBXO5vRZkmFoXA.T61aZMMnfFKNy-LEtbwYXuSaQfia6b_kUYvaiuqmcgVcRzfwsqOG7EFyuc_c60HCXR3_TueE_MEr49z92SVUOuTponbfzf54vartyhqnmPzHQvdD-57Ko8gQxAKojRXWBGGKTeCLFwPRtjkPWhAel9M1y0G0exRcwFfnHkEBG2EFJDHvtnmlFnkGf-cfWDn9AliObQj7LA6WTO5j_xTIgpJMeIcgb0-KGonYw_UUfkUeFUC2-bwcZpGDDW1PvG05_Seh1tfu6J60U_xtB8TpxAlWpucUbmf71Ka1lFstkRhQcrEB2DkTOztPbErkX7XcHVM_BeYPm8jeFcSLF6C-euS4Z2YMYmmwzMuOOD1Th3DcKABpnAs9FrUUOLM2zGHXGJxKPx5JbYTRUrzibqqMk0d4xywjTpgY7I0Xc7mh2JkpFAUjnClS-x9QwwW0UXZ_tFjSoCovNmitDHkv9cXkkXhhFvQ-QBLQ7ittBVRUUG4LgdY8KtoHMVT6CsoCDz6fwO2Wc55XYvjFeI24hla2unWFdcGG8ab2KjVhlsFZq9i2XIp1LryLx3xGgGP_1K9txHCxSDlQf5M5uKmtnCPawnl2W1bkpthTSPaoV_xmeRIr465B8dDR29SjSHIAeMrOamYDncyWkLvA-wc93teYgJ1EBqrP6zkKF_HiDpTtKns5ZABjF0BzJAjc3f_FlLDQOCYWhrwcnjNBf600-IDGdAxVq6mflPIOBvbimZc_QxQ.3mGdrfeOVuD6xYscptelPxZ7VHE-cys6w4psXGX5V7I"
-AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmE0MzRhNjExLTE2NGYtNDdjYS1iNTM2LThlMGViMmU0YzVmNg=="
+ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.rDxqb5-B5a_phZFd_mbBuuOMjeIpHbBOAssZ1M0j3K9F7wbJyn4wFxURTUKhZo8XKc4bUlW5V0LAI3QkwkGQIHJtznCS7Ij8PH41S1eWyHySMFo9u96zcFJApzKuoxXgmzsGk1Ibx5sEt8yQzqVcgqcXecM-S2rjifP849RZPbwbe1AAWP_8fIyasrQ7eNXXCYKgqfuCh6GWYuKglyC3ZSxnvjgRikGgWASbGG5qW5QzVg-dxqWel61rNuvZUUletTYlwY049WVoMgw1ziKQc6LlglqWul6IrTmKF-dcQYs_BB7GIfsRKVAitc3PA_zbpCOKJ-GdolYi0H3hhvgjbA.YuvTziLeup589XJTMqbv0A.NFbeLLa6eNvXCfhUW4DoqFhoZN-svSrNRt6v3qDnVDWuQTHT_AjddmtWa2ANIELs9dnuNPeuwVLM01pK8I8cgdAuWc1RtPsaok7ESx9CYvQBb3VWZAOy5h9p32Khg2B1yyZbL1kuEnEblvBJQTUUkzj3qNO2bIyb0InTdHIDLessLW_RIfWkhZWc7eia_I92MVvMem0WGl9iynlPl-hmsqOB_tGmzRDTH-aqv2f76EHOWFE1DMxcgh7EJLhHNrDHwygA_1jrylvhjLBJEfJWEbLMAThQ1emaJu9Dx30Kb8alCUz0nB6Bfw9E9xG5iQJPyX19s3WdcBPe9DAno3NrjkYDVgCh9G9qCDLYhx4pvhhh3mtd_IXaUstqPPk-vMOqAhVv64Yy-ZeYBnXEhcqXLt5UgD41Cm-ETCqAoGNVWpN-IYziuRRavN3AAivg-FZIRobN2OOhlahPkLyvOaLyVC5oCnEFSxZfkofnC5yafUs3dsQZ7X4Bmhx199k9cvLRBToFyTkWg6doJlSt_0Tg2cUm-4z-4JO1V48GoFlg7Tco8Sg3pLbH2teZMg8x3pR2EuJi7tS6W_JBEo-X3mUEdvOOcpw6j9VWDQ-nDAz6BHOdf6xKW_jqj64RdeGNbXzPDVwtsia2kZPvf0KhhhlHDKwVupgoPgxC4a6aE8Bl_8R71AW2x45U9rCnyTl050CBg1ufapBTfIY4j88zo2-3nNqAVdvDCLuhj4szO4ovg-Y.dwx2dXz4CSDmkDlUzkzee_NpyZJY7No-RyOq6VupZwE"
+AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmZmNWEyN2RjLWFlZmMtNGY0NC1hNmJlLTAzZmNiOTc0MjJkMg=="
 
 # ============================================================================
 # КОНФИГУРАЦИЯ REDIS
