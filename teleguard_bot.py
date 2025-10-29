@@ -17,7 +17,7 @@ TOKEN = '8320009669:AAHiVLu-Em8EOXBNHYrJ0UhVX3mMMTm8S_g'
 POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
 
 # ГигаЧат настройки - ГОТОВЫЙ ACCESS TOKEN
-from token inport TOKEN
+from token import TOKEN
 GIGACHAT_ACCESS_TOKEN = TOKEN
 # Конфигурация агентов
 AGENTS_CONFIG = {
