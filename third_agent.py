@@ -10,7 +10,7 @@ from typing import Dict, Any
 
 # === НАСТРОЙКИ (ГОТОВЫЙ ACCESS TOKEN) ===
 # ГигаЧат настройки - ГОТОВЫЙ ACCESS TOKEN
-from token inport TOKEN
+from token import TOKEN
 GIGACHAT_ACCESS_TOKEN = TOKEN
 # Redis настройки
 REDIS_HOST = "localhost"
