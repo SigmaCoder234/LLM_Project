@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №1 — Координатор и нормализатор (Исправленная версия)
+АГЕНТ №1 — Координатор и нормализатор (Исправлено - только групповые чаты)
 """
 
 import requests
@@ -36,12 +36,6 @@ logger = logging.getLogger(__name__)
 # КОНФИГУРАЦИЯ БД (ОДИНАКОВАЯ С АГЕНТОМ 3.2)
 # ============================================================================
 POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
-
-# ============================================================================
-# КОНФИГУРАЦИЯ GIGACHAT
-# ============================================================================
-ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.cv8YybaNK-3R-ALyaWB-AY1LGRKY8SBOguCeMJBYw4lYG9hdr8TS9nzY2xzOfMP0vX7jKrQ3rqxLOgj8IoDjxD9UL3HZlO1jhH75DoxvU68jHA0_5w_WNr6A82d3qvm2-2bdNkUp9eGwblY4I56eKdodRjJ2vscy9GrITu1lOPgzqP0ZI7D8wt_mqQyZjPEyMhmBqZcW7rExwN8ILaU36KysispjvBHZWKAcF77F4WOvmN0VAbs1ifmHUkWZY3g9gTJdpET2IP0k6u5i78rIX58eOTkCosIG19Il4byFf20GcluSMpKAZkdFXTkK6LBDQK-CD18-ZGCsMWaKthWFWg.My7TQEvIVBXO5vRZkmFoXA.T61aZMMnfFKNy-LEtbwYXuSaQfia6b_kUYvaiuqmcgVcRzfwsqOG7EFyuc_c60HCXR3_TueE_MEr49z92SVUOuTponbfzf54vartyhqnmPzHQvdD-57Ko8gQxAKojRXWBGGKTeCLFwPRtjkPWhAel9M1y0G0exRcwFfnHkEBG2EFJDHvtnmlFnkGf-cfWDn9AliObQj7LA6WTO5j_xTIgpJMeIcgb0-KGonYw_UUfkUeFUC2-bwcZpGDDW1PvG05_Seh1tfu6J60U_xtB8TpxAlWpucUbmf71Ka1lFstkRhQcrEB2DkTOztPbErkX7XcHVM_BeYPm8jeFcSLF6C-euS4Z2YMYmmwzMuOOD1Th3DcKABpnAs9FrUUOLM2zGHXGJxKPx5JbYTRUrzibqqMk0d4xywjTpgY7I0Xc7mh2JkpFAUjnClS-x9QwwW0UXZ_tFjSoCovNmitDHkv9cXkkXhhFvQ-QBLQ7ittBVRUUG4LgdY8KtoHMVT6CsoCDz6fwO2Wc55XYvjFeI24hla2unWFdcGG8ab2KjVhlsFZq9i2XIp1LryLx3xGgGP_1K9txHCxSDlQf5M5uKmtnCPawnl2W1bkpthTSPaoV_xmeRIr465B8dDR29SjSHIAeMrOamYDncyWkLvA-wc93teYgJ1EBqrP6zkKF_HiDpTtKns5ZABjF0BzJAjc3f_FlLDQOCYWhrwcnjNBf600-IDGdAxVq6mflPIOBvbimZc_QxQ.3mGdrfeOVuD6xYscptelPxZ7VHE-cys6w4psXGX5V7I"
-AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmE0MzRhNjExLTE2NGYtNDdjYS1iNTM2LThlMGViMmU0YzVmNg=="
 
 # ============================================================================
 # КОНФИГУРАЦИЯ REDIS
@@ -125,12 +119,23 @@ def get_db_session():
     return SessionLocal()
 
 # ============================================================================
-# ОСНОВНАЯ ЛОГИКА АГЕНТА 1
+# ФУНКЦИИ ПРОВЕРКИ ТИПА ЧАТА
+# ============================================================================
+def is_group_chat(chat_type: str) -> bool:
+    """Проверяет, является ли чат групповым"""
+    return chat_type in ['group', 'supergroup', 'channel']
+
+def is_group_chat_id(chat_id: int) -> bool:
+    """Проверяет, является ли chat_id групповым (отрицательные ID)"""
+    return chat_id < 0
+
+# ============================================================================
+# ОСНОВНАЯ ЛОГИКА АГЕНТА 1 (ТОЛЬКО ГРУППОВЫЕ ЧАТЫ)
 # ============================================================================
 def coordination_agent_1(input_data, db_session):
     """
     АГЕНТ 1 — Координатор и нормализатор.
-    Принимает сообщения от Telegram бота и готовит их для дальнейшей обработки.
+    Принимает сообщения ТОЛЬКО из групповых чатов и готовит их для дальнейшей обработки.
     """
     message = input_data.get("message", "")
     user_id = input_data.get("user_id")
@@ -140,6 +145,21 @@ def coordination_agent_1(input_data, db_session):
     message_link = input_data.get("message_link", "")
     
     logger.info(f"Координирую сообщение от @{username} в чате {chat_id}")
+    
+    # ПРОВЕРЯЕМ: обрабатываем только групповые чаты
+    if not is_group_chat_id(chat_id):
+        logger.info(f"🚫 Сообщение из личного чата {chat_id} пропущено")
+        return {
+            "agent_id": 1,
+            "action": "skip",
+            "reason": f"Личные чаты не обрабатываются. Chat ID: {chat_id}",
+            "message": message,
+            "user_id": user_id,
+            "username": username,
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "status": "skipped_private_chat"
+        }
     
     if not message:
         return {
@@ -163,13 +183,34 @@ def coordination_agent_1(input_data, db_session):
         "Запрещены угрозы и призывы к насилию"
     ]
     
-    # Сохраняем сообщение в БД
+    # Сохраняем сообщение в БД (только групповые чаты)
     try:
         chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
         if not chat:
-            chat = Chat(tg_chat_id=str(chat_id))
+            # Определяем тип чата по ID
+            chat_type = "supergroup" if chat_id < -1000000000000 else "group"
+            
+            chat = Chat(
+                tg_chat_id=str(chat_id),
+                chat_type=chat_type
+            )
             db_session.add(chat)
             db_session.commit()
+        
+        # Проверяем еще раз что это групповой чат по типу из БД
+        if not is_group_chat(chat.chat_type):
+            logger.info(f"🚫 Чат {chat_id} не является групповым (тип: {chat.chat_type})")
+            return {
+                "agent_id": 1,
+                "action": "skip",
+                "reason": f"Чат не является групповым. Тип: {chat.chat_type}",
+                "message": message,
+                "user_id": user_id,
+                "username": username,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "status": "skipped_non_group"
+            }
         
         # Проверяем, есть ли уже такое сообщение
         existing_message = db_session.query(Message).filter_by(
@@ -189,7 +230,7 @@ def coordination_agent_1(input_data, db_session):
             )
             db_session.add(msg)
             db_session.commit()
-            logger.info("💾 Сообщение сохранено в БД")
+            logger.info("💾 Сообщение из группового чата сохранено в БД")
         
     except Exception as e:
         logger.error(f"Ошибка сохранения в БД: {e}")
@@ -209,7 +250,7 @@ def coordination_agent_1(input_data, db_session):
     output = {
         "agent_id": 1,
         "action": "forward",
-        "reason": "Сообщение направлено агенту 2 для анализа",
+        "reason": "Сообщение из группового чата направлено агенту 2 для анализа",
         "message": message,
         "user_id": user_id,
         "username": username,
@@ -222,7 +263,7 @@ def coordination_agent_1(input_data, db_session):
         "timestamp": datetime.now().isoformat()
     }
     
-    logger.info(f"📋 Сообщение направлено для дальнейшей обработки")
+    logger.info(f"📋 Сообщение из группового чата {chat_id} направлено для дальнейшей обработки")
     return output
 
 # ============================================================================
@@ -271,7 +312,7 @@ class Agent1Worker:
             }
     
     def send_to_agent_2(self, result):
-        """Отправляет сообщение агенту 2"""
+        """Отправляет сообщение агенту 2 (только если это групповой чат)"""
         if result.get("action") == "forward":
             try:
                 agent_data = result.get("agent_data", {})
@@ -282,11 +323,13 @@ class Agent1Worker:
             except Exception as e:
                 logger.error(f"Не удалось отправить агенту 2: {e}")
                 return False
+        elif result.get("action") == "skip":
+            logger.info(f"⏭️ Сообщение пропущено: {result.get('reason', 'Неизвестная причина')}")
         return False
     
     def run(self):
         """Главный цикл обработки сообщений"""
-        logger.info(f"✅ Агент 1 запущен")
+        logger.info(f"✅ Агент 1 запущен (только групповые чаты)")
         logger.info(f"   Слушаю очередь: {QUEUE_AGENT_1_INPUT}")
         logger.info(f"   Отправляю в Агента 2: {QUEUE_AGENT_2_INPUT}")
         logger.info("   Нажмите Ctrl+C для остановки\n")
@@ -306,7 +349,7 @@ class Agent1Worker:
                     db_session = get_db_session()
                     output = self.process_message(message_data, db_session)
                     
-                    # Отправляем агенту 2
+                    # Отправляем агенту 2 (только групповые чаты)
                     sent_to_agent2 = self.send_to_agent_2(output)
                     
                     db_session.close()
@@ -331,8 +374,8 @@ class Agent1Worker:
 # ============================================================================
 app = FastAPI(
     title="🤖 Агент №1 - Координатор",
-    description="Координация и нормализация сообщений",
-    version="1.0"
+    description="Координация и нормализация сообщений (только групповые чаты)",
+    version="1.1"
 )
 
 app.add_middleware(
@@ -350,7 +393,8 @@ async def health_check():
         "status": "online",
         "agent_id": 1,
         "name": "Агент №1 (Координатор)",
-        "version": "1.0",
+        "version": "1.1",
+        "description": "Обрабатывает только групповые чаты",
         "timestamp": datetime.now().isoformat(),
         "redis_queue": QUEUE_AGENT_1_INPUT,
         "uptime_seconds": int(time.time())
@@ -368,17 +412,31 @@ async def process_message_endpoint(message_data: dict):
 
 @app.get("/stats")
 async def get_stats():
-    """Статистика работы агента"""
+    """Статистика работы агента (только групповые чаты)"""
     db_session = get_db_session()
     try:
-        total_messages = db_session.query(Message).count()
-        processed_today = db_session.query(Message).filter(
-            Message.processed_at >= datetime.now().date()
-        ).count()
+        # Считаем только сообщения из групповых чатов
+        group_chats = db_session.query(Chat).filter(
+            Chat.chat_type.in_(['group', 'supergroup', 'channel'])
+        ).all()
+        
+        total_messages = 0
+        processed_today = 0
+        
+        for chat in group_chats:
+            chat_messages = db_session.query(Message).filter_by(chat_id=chat.id).count()
+            total_messages += chat_messages
+            
+            today_messages = db_session.query(Message).filter(
+                Message.chat_id == chat.id,
+                Message.processed_at >= datetime.now().date()
+            ).count()
+            processed_today += today_messages
         
         return {
             "total_messages": total_messages,
             "processed_today": processed_today,
+            "group_chats_count": len(group_chats),
             "agent_id": 1,
             "timestamp": datetime.now().isoformat()
         }
@@ -401,12 +459,12 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         mode = sys.argv[1]
         if mode == "test":
-            # Тестирование
+            # Тестирование с групповым чатом
             test_input = {
                 "message": "Привет всем! Как дела?",
                 "user_id": 123,
                 "username": "test_user",
-                "chat_id": -100,
+                "chat_id": -1001234567890,  # Групповой чат (отрицательный ID)
                 "message_id": 1,
                 "message_link": "https://t.me/test/1"
             }
@@ -415,6 +473,23 @@ if __name__ == "__main__":
             result = coordination_agent_1(test_input, db_session)
             db_session.close()
             print(json.dumps(result, ensure_ascii=False, indent=2))
+            
+            # Тест с личным чатом (должен быть пропущен)
+            test_private = {
+                "message": "Привет из личного чата!",
+                "user_id": 123,
+                "username": "test_user",
+                "chat_id": 1234567890,  # Личный чат (положительный ID)
+                "message_id": 2,
+                "message_link": "https://t.me/test/2"
+            }
+            
+            db_session = get_db_session()
+            result_private = coordination_agent_1(test_private, db_session)
+            db_session.close()
+            print("\n--- Тест личного чата ---")
+            print(json.dumps(result_private, ensure_ascii=False, indent=2))
+            
         elif mode == "api":
             # Запуск только FastAPI
             run_fastapi()
