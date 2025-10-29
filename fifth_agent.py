@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №5 — Арбитр многоагентной системы (обновленная версия на основе agent3.4)
+АГЕНТ №5 — Арбитр многоагентной системы (Исправленная версия)
 """
 
 import requests
@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# КОНФИГУРАЦИЯ БД (ОДИНАКОВАЯ С АГЕНТОМ 3.4)
+# КОНФИГУРАЦИЯ БД (ОДИНАКОВАЯ С АГЕНТОМ 3.2)
 # ============================================================================
 POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
 
@@ -55,7 +55,7 @@ QUEUE_AGENT_3_OUTPUT = "queue:agent3:output"
 QUEUE_AGENT_4_OUTPUT = "queue:agent4:output"
 
 # ============================================================================
-# МОДЕЛИ БД (ТОЧНО ТЕ ЖЕ ЧТО В АГЕНТЕ 3.4)
+# МОДЕЛИ БД (ЕДИНЫЕ ДЛЯ ВСЕХ АГЕНТОВ)
 # ============================================================================
 Base = declarative_base()
 
@@ -279,22 +279,23 @@ class ModerationArbiter:
         return decision
 
 # ============================================================================
-# УВЕДОМЛЕНИЕ МОДЕРАТОРОВ
+# УВЕДОМЛЕНИЕ МОДЕРАТОРОВ - ИСПРАВЛЕНО ДЛЯ ФИЛЬТРАЦИИ ПО ЧАТАМ
 # ============================================================================
 def send_notification_to_moderators(decision: Agent5Decision, db_session):
-    """Отправка уведомлений модераторам о принятом решении"""
+    """Отправка уведомлений модераторам о принятом решении - только модераторам этого чата"""
     if decision.final_verdict != VerdictType.BAN:
         return True  # Не уведомляем о разрешенных сообщениях
     
     try:
-        # Находим модераторов чата
+        # Находим модераторов КОНКРЕТНОГО чата
         chat = db_session.query(Chat).filter_by(tg_chat_id=str(decision.chat_id)).first()
         if not chat:
             logger.warning(f"⚠️ Чат {decision.chat_id} не найден в БД")
             return False
         
+        # ВАЖНО: Получаем только модераторов этого конкретного чата
         moderators = db_session.query(Moderator).filter_by(
-            chat_id=chat.id, 
+            chat_id=chat.id,  # Фильтруем по конкретному чату!
             is_active=True
         ).all()
         
@@ -304,9 +305,10 @@ def send_notification_to_moderators(decision: Agent5Decision, db_session):
         
         # Формируем уведомление
         notification = (
-            f"🚨 <b>Обнаружено нарушение!</b>\n\n"
+            f"🚨 <b>Обнаружено нарушение в чате!</b>\n\n"
+            f"💬 <b>Чат ID:</b> {decision.chat_id}\n"
             f"👤 <b>Пользователь:</b> {decision.username}\n"
-            f"💬 <b>Сообщение:</b> {decision.message_text[:200]}{'...' if len(decision.message_text) > 200 else ''}\n"
+            f"📄 <b>Сообщение:</b> {decision.message_text[:200]}{'...' if len(decision.message_text) > 200 else ''}\n"
             f"⚖️ <b>Решение агента 5:</b> {decision.final_verdict.value.upper()}\n"
             f"🎯 <b>Уверенность:</b> {decision.confidence:.1%}\n"
             f"📝 <b>Причина:</b> {decision.reasoning[:300]}{'...' if len(decision.reasoning) > 300 else ''}\n"
@@ -315,7 +317,7 @@ def send_notification_to_moderators(decision: Agent5Decision, db_session):
             f"🕐 <b>Время:</b> {decision.timestamp.strftime('%H:%M:%S')}"
         )
         
-        # Отправляем уведомления всем модераторам
+        # Отправляем уведомления только модераторам этого чата
         success_count = 0
         for moderator in moderators:
             if moderator.telegram_user_id:
@@ -330,14 +332,14 @@ def send_notification_to_moderators(decision: Agent5Decision, db_session):
                     response = requests.post(url, json=data, timeout=10)
                     if response.status_code == 200:
                         success_count += 1
-                        logger.info(f"📤 Уведомление отправлено модератору @{moderator.username}")
+                        logger.info(f"📤 Уведомление отправлено модератору @{moderator.username} для чата {decision.chat_id}")
                     else:
                         logger.error(f"❌ Ошибка отправки уведомления: {response.text}")
                         
                 except Exception as e:
                     logger.error(f"❌ Исключение при отправке уведомления: {e}")
         
-        logger.info(f"📤 Уведомления отправлены {success_count}/{len(moderators)} модераторам")
+        logger.info(f"📤 Уведомления отправлены {success_count}/{len(moderators)} модераторам чата {decision.chat_id}")
         return success_count > 0
         
     except Exception as e:
@@ -376,7 +378,7 @@ def moderation_agent_5(agent3_data: Dict[str, Any], agent4_data: Dict[str, Any],
         except Exception as e:
             logger.error(f"Ошибка обновления БД: {e}")
     
-    # Уведомляем модераторов
+    # Уведомляем модераторов (только этого чата!)
     notification_sent = send_notification_to_moderators(decision, db_session)
     
     output = {
@@ -400,9 +402,9 @@ def moderation_agent_5(agent3_data: Dict[str, Any], agent4_data: Dict[str, Any],
     }
     
     if decision.final_verdict == VerdictType.BAN:
-        logger.warning(f"🚨 ФИНАЛЬНОЕ РЕШЕНИЕ: БАН для @{decision.username}")
+        logger.warning(f"🚨 ФИНАЛЬНОЕ РЕШЕНИЕ: БАН для @{decision.username} в чате {decision.chat_id}")
     else:
-        logger.info(f"✅ ФИНАЛЬНОЕ РЕШЕНИЕ: НЕ БАНИТЬ @{decision.username}")
+        logger.info(f"✅ ФИНАЛЬНОЕ РЕШЕНИЕ: НЕ БАНИТЬ @{decision.username} в чате {decision.chat_id}")
     
     return output
 

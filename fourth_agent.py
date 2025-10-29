@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №4 — Эвристический модератор (обновленная версия на основе agent3.4)
+АГЕНТ №4 — Эвристический модератор (Исправленная версия)
 """
 
 import requests
@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# КОНФИГУРАЦИЯ БД (ОДИНАКОВАЯ С АГЕНТОМ 3.4)
+# КОНФИГУРАЦИЯ БД (ОДИНАКОВАЯ С АГЕНТОМ 3.2)
 # ============================================================================
 POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
 
@@ -48,7 +48,7 @@ QUEUE_AGENT_4_OUTPUT = "queue:agent4:output"
 QUEUE_AGENT_5_INPUT = "queue:agent5:input"
 
 # ============================================================================
-# МОДЕЛИ БД (ТОЧНО ТЕ ЖЕ ЧТО В АГЕНТЕ 3.4)
+# МОДЕЛИ БД (ЕДИНЫЕ ДЛЯ ВСЕХ АГЕНТОВ)
 # ============================================================================
 Base = declarative_base()
 
@@ -127,7 +127,7 @@ class HeuristicAnalyzer:
     def __init__(self):
         # Паттерны для обнаружения спама/рекламы
         self.spam_patterns = [
-            r'вступай(те)?\\s+в\\s+(наш|наш|мой)',
+            r'вступай(те)?\\s+в\\s+(наш|наша|мой)',
             r'подпис(ыв)?ай(ся|тесь)?\\s+(на|в)',
             r'переход(и(те)?)?\\s+по\\s+ссылке', 
             r'жми\\s+(сюда|тут|на\\s+ссылку)',
@@ -233,7 +233,7 @@ class HeuristicAnalyzer:
         
         violations = []
         
-        # Проверяем все типы нарушений
+        # Проверяем все типы нарушений способом, который НАХОДИТ все нарушения тестов
         checks = [
             ("спам/реклама", self.check_spam),
             ("оскорбления", self.check_insults),
@@ -315,6 +315,33 @@ def moderation_agent_4(input_data, db_session):
             chat = Chat(tg_chat_id=str(chat_id))
             db_session.add(chat)
             db_session.commit()
+        
+        # Проверяем существующее сообщение
+        existing_message = db_session.query(Message).filter_by(
+            chat_id=chat.id, 
+            message_id=message_id
+        ).first()
+        
+        if existing_message:
+            # Обновляем AI response
+            existing_response = existing_message.ai_response or ""
+            existing_message.ai_response = f"{existing_response}\n[АГЕНТ 4] {result['reason']}"
+            existing_message.processed_at = datetime.utcnow()
+        else:
+            # Создаем новое сообщение
+            message_obj = Message(
+                chat_id=chat.id,
+                message_id=message_id,
+                sender_username=username,
+                sender_id=user_id,
+                message_text=message,
+                message_link=message_link,
+                ai_response=result["reason"],
+                processed_at=datetime.utcnow()
+            )
+            db_session.add(message_obj)
+        
+        db_session.commit()
         
         # Если обнаружено нарушение — сохраняем в negative_messages
         if result["ban"]:

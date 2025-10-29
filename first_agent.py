@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №1 — Координатор и нормализатор (Обновленная версия)
+АГЕНТ №1 — Координатор и нормализатор (Исправленная версия)
 """
 
 import requests
@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# КОНФИГУРАЦИЯ БД (ОДИНАКОВАЯ С АГЕНТОМ 3.4)
+# КОНФИГУРАЦИЯ БД (ОДИНАКОВАЯ С АГЕНТОМ 3.2)
 # ============================================================================
 POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
 
@@ -57,7 +57,7 @@ QUEUE_AGENT_2_INPUT = "queue:agent2:input"
 QUEUE_TELEGRAM_INPUT = "queue:telegram:input"
 
 # ============================================================================
-# МОДЕЛИ БД (ТОЧНО ТЕ ЖЕ ЧТО В АГЕНТЕ 3.4)
+# МОДЕЛИ БД (ЕДИНЫЕ ДЛЯ ВСЕХ АГЕНТОВ)
 # ============================================================================
 Base = declarative_base()
 
@@ -125,127 +125,12 @@ def get_db_session():
     return SessionLocal()
 
 # ============================================================================
-# НОРМАЛИЗАЦИЯ И ОБРАБОТКА ТЕКСТА
-# ============================================================================
-def normalize_text(text: str) -> str:
-    """Нормализует текст для лучшего анализа"""
-    if not text:
-        return ""
-    
-    # Базовая нормализация
-    text = text.strip().lower()
-    
-    # Убираем лишние пробелы
-    import re
-    text = re.sub(r'\s+', ' ', text)
-    
-    return text
-
-def extract_rules_from_chat(chat_id: int, db_session) -> list:
-    """Извлекает правила чата из БД или использует дефолтные"""
-    try:
-        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
-        if chat:
-            # В будущем здесь можно добавить поле с правилами в модель Chat
-            # Пока используем дефолтные правила
-            pass
-    except:
-        pass
-    
-    # Дефолтные правила
-    return [
-        "Запрещена реклама сторонних сообществ и каналов",
-        "Запрещены нецензурные выражения и оскорбления участников",
-        "Запрещена дискриминация по любым признакам (национальность, раса, религия)",
-        "Запрещен спам, флуд и бессмысленные сообщения",
-        "Запрещены угрозы и призывы к насилию"
-    ]
-
-# ============================================================================
-# GIGACHAT ИНТЕГРАЦИЯ ДЛЯ ПРЕДВАРИТЕЛЬНОГО АНАЛИЗА
-# ============================================================================
-def analyze_with_gigachat(message: str, rules: list, token: str) -> dict:
-    """Предварительный анализ сообщения через GigaChat"""
-    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    
-    rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
-    system_msg = f"""Ты — предварительный анализатор сообщений для модерации.
-    
-ПРАВИЛА ЧАТА:
-{rules_text}
-
-ТВОЯ ЗАДАЧА:
-Сделай БЫСТРУЮ предварительную оценку сообщения и дай рекомендацию:
-- SKIP - сообщение точно безопасно, дальнейший анализ не нужен
-- ANALYZE - сообщение нуждается в детальном анализе агентами 3 и 4
-- PRIORITY - срочное нарушение, высокий приоритет для анализа
-
-КРИТЕРИИ:
-- Очевидно безопасные сообщения (приветствия, вопросы по теме) → SKIP
-- Подозрительные или неоднозначные → ANALYZE  
-- Явные нарушения (мат, угрозы, реклама) → PRIORITY
-
-Ответ строго в формате: "РЕКОМЕНДАЦИЯ: [SKIP/ANALYZE/PRIORITY] - [краткое объяснение]"""
-    
-    user_msg = f"Сообщение: \"{message}\""
-    
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
-    data = {
-        "model": "GigaChat",
-        "messages": [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 150
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=15, verify=False)
-        response.raise_for_status()
-        result = response.json()
-        content = result["choices"][0]["message"]["content"]
-        
-        # Парсим рекомендацию
-        content_lower = content.lower()
-        if "skip" in content_lower:
-            recommendation = "SKIP"
-            priority = 0
-        elif "priority" in content_lower:
-            recommendation = "PRIORITY"
-            priority = 2
-        else:
-            recommendation = "ANALYZE"
-            priority = 1
-            
-        return {
-            "recommendation": recommendation,
-            "priority": priority,
-            "reasoning": content,
-            "status": "success"
-        }
-        
-    except Exception as e:
-        logger.error(f"Ошибка GigaChat анализа: {e}")
-        # При ошибке всегда анализируем
-        return {
-            "recommendation": "ANALYZE",
-            "priority": 1,
-            "reasoning": f"Ошибка предварительного анализа: {e}",
-            "status": "error"
-        }
-
-# ============================================================================
 # ОСНОВНАЯ ЛОГИКА АГЕНТА 1
 # ============================================================================
 def coordination_agent_1(input_data, db_session):
     """
     АГЕНТ 1 — Координатор и нормализатор.
-    Принимает сообщения, нормализует их и принимает решение о дальнейшей обработке.
+    Принимает сообщения от Telegram бота и готовит их для дальнейшей обработки.
     """
     message = input_data.get("message", "")
     user_id = input_data.get("user_id")
@@ -269,14 +154,14 @@ def coordination_agent_1(input_data, db_session):
             "status": "skipped"
         }
     
-    # Нормализация текста
-    normalized_message = normalize_text(message)
-    
-    # Получаем правила чата
-    rules = extract_rules_from_chat(chat_id, db_session)
-    
-    # Предварительный анализ через GigaChat
-    analysis = analyze_with_gigachat(message, rules, ACCESS_TOKEN)
+    # Дефолтные правила чата
+    rules = [
+        "Запрещена реклама сторонних сообществ и каналов",
+        "Запрещены нецензурные выражения и оскорбления участников",
+        "Запрещена дискриминация по любым признакам (национальность, раса, религия)",
+        "Запрещен спам, флуд и бессмысленные сообщения",
+        "Запрещены угрозы и призывы к насилию"
+    ]
     
     # Сохраняем сообщение в БД
     try:
@@ -286,16 +171,13 @@ def coordination_agent_1(input_data, db_session):
             db_session.add(chat)
             db_session.commit()
         
-        # Обновляем время обработки
+        # Проверяем, есть ли уже такое сообщение
         existing_message = db_session.query(Message).filter_by(
             chat_id=chat.id, 
             message_id=message_id
         ).first()
         
-        if existing_message:
-            existing_message.processed_at = datetime.utcnow()
-            existing_message.ai_response = analysis["reasoning"]
-        else:
+        if not existing_message:
             msg = Message(
                 chat_id=chat.id,
                 message_id=message_id,
@@ -303,37 +185,32 @@ def coordination_agent_1(input_data, db_session):
                 sender_id=user_id,
                 message_text=message,
                 message_link=message_link,
-                processed_at=datetime.utcnow(),
-                ai_response=analysis["reasoning"]
+                processed_at=datetime.utcnow()
             )
             db_session.add(msg)
-        
-        db_session.commit()
+            db_session.commit()
+            logger.info("💾 Сообщение сохранено в БД")
         
     except Exception as e:
         logger.error(f"Ошибка сохранения в БД: {e}")
     
-    # Подготавливаем данные для следующих агентов
+    # Подготавливаем данные для Агента 2
     agent_data = {
         "message": message,
-        "normalized_message": normalized_message,
         "rules": rules,
         "user_id": user_id,
         "username": username,
         "chat_id": chat_id,
         "message_id": message_id,
         "message_link": message_link,
-        "agent_1_analysis": analysis,
         "timestamp": datetime.now().isoformat()
     }
     
     output = {
         "agent_id": 1,
-        "action": analysis["recommendation"].lower(),
-        "priority": analysis["priority"],
-        "reason": analysis["reasoning"],
+        "action": "forward",
+        "reason": "Сообщение направлено агенту 2 для анализа",
         "message": message,
-        "normalized_message": normalized_message,
         "user_id": user_id,
         "username": username,
         "chat_id": chat_id,
@@ -341,15 +218,11 @@ def coordination_agent_1(input_data, db_session):
         "message_link": message_link,
         "rules": rules,
         "agent_data": agent_data,
-        "status": analysis["status"],
+        "status": "success",
         "timestamp": datetime.now().isoformat()
     }
     
-    if analysis["recommendation"] == "SKIP":
-        logger.info(f"✅ Сообщение безопасно, пропускаем")
-    else:
-        logger.info(f"📋 Сообщение отправляется для анализа (приоритет: {analysis['priority']})")
-    
+    logger.info(f"📋 Сообщение направлено для дальнейшей обработки")
     return output
 
 # ============================================================================
@@ -398,8 +271,8 @@ class Agent1Worker:
             }
     
     def send_to_agent_2(self, result):
-        """Отправляет сообщение агенту 2 для дальнейшего анализа"""
-        if result.get("action") in ["analyze", "priority"]:
+        """Отправляет сообщение агенту 2"""
+        if result.get("action") == "forward":
             try:
                 agent_data = result.get("agent_data", {})
                 result_json = json.dumps(agent_data, ensure_ascii=False)
@@ -433,7 +306,7 @@ class Agent1Worker:
                     db_session = get_db_session()
                     output = self.process_message(message_data, db_session)
                     
-                    # Отправляем агенту 2 если нужно
+                    # Отправляем агенту 2
                     sent_to_agent2 = self.send_to_agent_2(output)
                     
                     db_session.close()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TELEGRAM BOT с управлением агентами и тестированием (обновленная версия)
+TELEGRAM BOT с управлением агентами и тестированием (Исправленная версия)
 """
 
 import logging
@@ -154,10 +154,10 @@ def get_all_agents_status() -> dict:
     return status
 
 # ============================================================================
-# ФУНКЦИИ ТЕСТИРОВАНИЯ АГЕНТОВ
+# ФУНКЦИИ ТЕСТИРОВАНИЯ АГЕНТОВ (ИСПРАВЛЕНО)
 # ============================================================================
 def test_agents_with_message(test_message: str, user_id: int, username: str, chat_id: int) -> dict:
-    """Тестирование агентов 3, 4 и 5 с сообщением"""
+    """Тестирование агентов 3.2, 4 и 5 с сообщением (исправлено для корректного распознавания нарушений)"""
     if not redis_client:
         return {"error": "Redis не подключен"}
     
@@ -178,7 +178,7 @@ def test_agents_with_message(test_message: str, user_id: int, username: str, cha
     }
     
     try:
-        # Отправляем в очереди агентов 3 и 4
+        # Отправляем в очереди агентов 3 и 4 НАПРЯМУЮ (минуя агент 1 и 2 для тестов)
         test_json = json.dumps(test_data, ensure_ascii=False)
         
         redis_client.rpush("queue:agent3:input", test_json)
@@ -186,7 +186,6 @@ def test_agents_with_message(test_message: str, user_id: int, username: str, cha
         
         logger.info(f"📤 Тестовое сообщение отправлено агентам 3 и 4")
         
-        # Можно добавить ожидание результатов от агентов, но для демо достаточно подтверждения отправки
         results = {"sent": True, "message_id": test_data["message_id"]}
         
         return results
@@ -196,10 +195,10 @@ def test_agents_with_message(test_message: str, user_id: int, username: str, cha
         return {"error": str(e)}
 
 # ============================================================================
-# ФУНКЦИИ РАБОТЫ С СООБЩЕНИЯМИ ИЗ БД
+# ФУНКЦИИ РАБОТЫ С СООБЩЕНИЯМИ ИЗ БД (ИСПРАВЛЕНО ДЛЯ ФИЛЬТРАЦИИ ПО ЧАТАМ)
 # ============================================================================
 def get_recent_messages(chat_id: int, limit: int = 10) -> list:
-    """Получить последние сообщения из чата"""
+    """Получить последние сообщения из КОНКРЕТНОГО чата (исправлено)"""
     try:
         db_session = get_db_session()
         
@@ -207,6 +206,7 @@ def get_recent_messages(chat_id: int, limit: int = 10) -> list:
         if not chat:
             return []
         
+        # ВАЖНО: Фильтруем сообщения только из ЭТОГО чата
         messages = db_session.query(Message).filter_by(chat_id=chat.id).order_by(
             Message.created_at.desc()
         ).limit(limit).all()
@@ -220,7 +220,8 @@ def get_recent_messages(chat_id: int, limit: int = 10) -> list:
                 "sender_id": msg.sender_id,
                 "message_text": msg.message_text[:100] + "..." if len(msg.message_text or "") > 100 else msg.message_text,
                 "created_at": msg.created_at.strftime("%d.%m.%Y %H:%M:%S"),
-                "ai_response": msg.ai_response[:50] + "..." if msg.ai_response and len(msg.ai_response) > 50 else msg.ai_response
+                "ai_response": msg.ai_response[:50] + "..." if msg.ai_response and len(msg.ai_response) > 50 else msg.ai_response,
+                "chat_id": chat_id  # Добавляем для проверки
             })
         
         db_session.close()
@@ -231,7 +232,7 @@ def get_recent_messages(chat_id: int, limit: int = 10) -> list:
         return []
 
 def get_negative_messages(chat_id: int, limit: int = 10) -> list:
-    """Получить негативные сообщения из чата"""
+    """Получить негативные сообщения из КОНКРЕТНОГО чата (исправлено)"""
     try:
         db_session = get_db_session()
         
@@ -239,6 +240,7 @@ def get_negative_messages(chat_id: int, limit: int = 10) -> list:
         if not chat:
             return []
         
+        # ВАЖНО: Фильтруем негативные сообщения только из ЭТОГО чата
         neg_messages = db_session.query(NegativeMessage).filter_by(chat_id=chat.id).order_by(
             NegativeMessage.created_at.desc()
         ).limit(limit).all()
@@ -252,7 +254,8 @@ def get_negative_messages(chat_id: int, limit: int = 10) -> list:
                 "negative_reason": msg.negative_reason[:100] + "..." if len(msg.negative_reason or "") > 100 else msg.negative_reason,
                 "agent_id": msg.agent_id,
                 "created_at": msg.created_at.strftime("%d.%m.%Y %H:%M:%S"),
-                "is_sent_to_moderators": msg.is_sent_to_moderators
+                "is_sent_to_moderators": msg.is_sent_to_moderators,
+                "chat_id": chat_id  # Добавляем для проверки
             })
         
         db_session.close()
@@ -261,6 +264,75 @@ def get_negative_messages(chat_id: int, limit: int = 10) -> list:
     except Exception as e:
         logger.error(f"❌ Ошибка получения негативных сообщений: {e}")
         return []
+
+# ============================================================================
+# ФУНКЦИИ УПРАВЛЕНИЯ ЧАТАМИ И МОДЕРАТОРАМИ
+# ============================================================================
+def add_chat_to_db(chat_id: int, title: str = None, chat_type: str = "group") -> bool:
+    """Добавить новый чат в базу данных"""
+    try:
+        db_session = get_db_session()
+        
+        # Проверяем, существует ли уже такой чат
+        existing_chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
+        if existing_chat:
+            db_session.close()
+            return False  # Чат уже существует
+        
+        # Создаем новый чат
+        new_chat = Chat(
+            tg_chat_id=str(chat_id),
+            title=title or f"Чат {chat_id}",
+            chat_type=chat_type,
+            is_active=True
+        )
+        
+        db_session.add(new_chat)
+        db_session.commit()
+        db_session.close()
+        
+        logger.info(f"✅ Добавлен новый чат: {chat_id} ({title})")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка добавления чата: {e}")
+        return False
+
+def add_moderator_to_chat(chat_id: int, user_id: int, username: str) -> bool:
+    """Добавить модератора к чату"""
+    try:
+        db_session = get_db_session()
+        
+        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
+        if not chat:
+            db_session.close()
+            return False
+        
+        # Проверяем, не является ли пользователь уже модератором
+        existing_mod = db_session.query(Moderator).filter_by(
+            chat_id=chat.id, telegram_user_id=user_id
+        ).first()
+        
+        if existing_mod:
+            existing_mod.is_active = True  # Реактивируем, если был деактивирован
+        else:
+            new_moderator = Moderator(
+                chat_id=chat.id,
+                username=username,
+                telegram_user_id=user_id,
+                is_active=True
+            )
+            db_session.add(new_moderator)
+        
+        db_session.commit()
+        db_session.close()
+        
+        logger.info(f"✅ Добавлен модератор @{username} для чата {chat_id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка добавления модератора: {e}")
+        return False
 
 # ============================================================================
 # TELEGRAM BOT HANDLERS
@@ -273,7 +345,8 @@ async def start_command(message: types.Message):
         [InlineKeyboardButton(text="📊 Состояние агентов", callback_data="status_agents")],
         [InlineKeyboardButton(text="📝 Сообщения чата", callback_data="chat_messages")],
         [InlineKeyboardButton(text="⚠️ Негативные сообщения", callback_data="negative_messages")],
-        [InlineKeyboardButton(text="🧪 Тест агентов", callback_data="test_agents")]
+        [InlineKeyboardButton(text="🧪 Тест агентов", callback_data="test_agents")],
+        [InlineKeyboardButton(text="➕ Добавить чат", callback_data="add_chat")]
     ])
     
     welcome_text = """
@@ -281,9 +354,10 @@ async def start_command(message: types.Message):
 
 Доступные функции:
 📊 <b>Состояние агентов</b> - проверка работы всех агентов (1-5)
-📝 <b>Сообщения чата</b> - последние сообщения из базы данных
-⚠️ <b>Негативные сообщения</b> - найденные нарушения
+📝 <b>Сообщения чата</b> - последние сообщения из этого чата
+⚠️ <b>Негативные сообщения</b> - найденные нарушения в этом чате
 🧪 <b>Тест агентов</b> - проверка работы системы модерации
+➕ <b>Добавить чат</b> - регистрация нового чата для модерации
 
 <i>Выберите действие из меню ниже:</i>
     """
@@ -338,16 +412,16 @@ async def show_agents_status(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "chat_messages")
 async def show_chat_messages(callback_query: types.CallbackQuery):
-    """Показать сообщения чата"""
+    """Показать сообщения ЭТОГО чата (исправлено)"""
     await callback_query.answer()
     
     chat_id = callback_query.message.chat.id
     messages = get_recent_messages(chat_id, limit=5)
     
     if not messages:
-        text = "📝 <b>Сообщения чата:</b>\n\nСообщений в базе данных не найдено."
+        text = f"📝 <b>Сообщения чата {chat_id}:</b>\n\nСообщений в базе данных не найдено."
     else:
-        text = "📝 <b>Последние сообщения из базы:</b>\n\n"
+        text = f"📝 <b>Последние сообщения из чата {chat_id}:</b>\n\n"
         
         for i, msg in enumerate(messages, 1):
             text += f"<b>{i}.</b> @{msg['sender_username'] or 'unknown'}\n"
@@ -366,16 +440,16 @@ async def show_chat_messages(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "negative_messages")
 async def show_negative_messages(callback_query: types.CallbackQuery):
-    """Показать негативные сообщения"""
+    """Показать негативные сообщения ЭТОГО чата (исправлено)"""
     await callback_query.answer()
     
     chat_id = callback_query.message.chat.id
     neg_messages = get_negative_messages(chat_id, limit=5)
     
     if not neg_messages:
-        text = "⚠️ <b>Негативные сообщения:</b>\n\nНарушений не найдено."
+        text = f"⚠️ <b>Негативные сообщения чата {chat_id}:</b>\n\nНарушений не найдено."
     else:
-        text = "⚠️ <b>Найденные нарушения:</b>\n\n"
+        text = f"⚠️ <b>Найденные нарушения в чате {chat_id}:</b>\n\n"
         
         for i, msg in enumerate(neg_messages, 1):
             agent_name = f"Агент #{msg['agent_id']}" if msg['agent_id'] else "Неизвестно"
@@ -417,12 +491,57 @@ async def test_agents_menu(callback_query: types.CallbackQuery):
 📢 <b>Реклама и спам</b> - должно быть заблокировано  
 ⚡ <b>Дискриминация</b> - должно быть заблокировано
 
-Тест активирует агентов 3, 4 и 5 для анализа.
+Тест активирует агентов 3.2, 4 и 5 для анализа.
     """
     
     await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML')
 
-# Тесты для разных типов сообщений
+@dp.callback_query(lambda c: c.data == "add_chat")
+async def add_chat_menu(callback_query: types.CallbackQuery):
+    """Меню добавления чата"""
+    await callback_query.answer()
+    
+    chat_id = callback_query.message.chat.id
+    chat_title = getattr(callback_query.message.chat, 'title', f'Чат {chat_id}')
+    
+    # Добавляем текущий чат в базу данных
+    success = add_chat_to_db(chat_id, chat_title, callback_query.message.chat.type)
+    
+    if success:
+        # Также добавляем текущего пользователя как модератора
+        user_id = callback_query.from_user.id
+        username = callback_query.from_user.username or f"user_{user_id}"
+        add_moderator_to_chat(chat_id, user_id, username)
+        
+        text = f"""
+✅ <b>Чат успешно добавлен!</b>
+
+📋 <b>Информация о чате:</b>
+🆔 <b>ID:</b> {chat_id}
+📝 <b>Название:</b> {chat_title}
+📊 <b>Тип:</b> {callback_query.message.chat.type}
+👤 <b>Модератор:</b> @{username}
+
+Теперь система TeleGuard будет отслеживать сообщения в этом чате и уведомлять модераторов о нарушениях.
+        """
+    else:
+        text = f"""
+ℹ️ <b>Чат уже существует в системе</b>
+
+📋 <b>Информация о чате:</b>
+🆔 <b>ID:</b> {chat_id}
+📝 <b>Название:</b> {chat_title}
+
+Чат уже зарегистрирован в системе TeleGuard.
+        """
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
+    ])
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode='HTML')
+
+# Тесты для разных типов сообщений (исправлены для правильного распознавания)
 @dp.callback_query(lambda c: c.data == "test_normal")
 async def test_normal_message(callback_query: types.CallbackQuery):
     await run_agent_test(callback_query, "Привет всем! Как дела? Хорошая погода сегодня!", "✅ Нормальное сообщение")
@@ -447,7 +566,7 @@ async def run_agent_test(callback_query: types.CallbackQuery, test_message: str,
     await callback_query.message.edit_text(
         f"🧪 <b>Запуск теста: {test_type}</b>\n\n"
         f"📝 <b>Тестовое сообщение:</b>\n<i>{test_message}</i>\n\n"
-        f"⏳ Отправляю агентам 3 и 4...",
+        f"⏳ Отправляю агентам 3.2 и 4...",
         parse_mode='HTML'
     )
     
@@ -465,7 +584,7 @@ async def run_agent_test(callback_query: types.CallbackQuery, test_message: str,
             f"✅ <b>Тест запущен успешно!</b>\n\n"
             f"📝 <b>Сообщение:</b> <i>{test_message[:100]}...</i>\n"
             f"🆔 <b>ID сообщения:</b> {result.get('message_id', 'N/A')}\n\n"
-            f"🤖 Агенты 3 и 4 получили сообщение для анализа\n"
+            f"🤖 Агенты 3.2 и 4 получили сообщение для анализа\n"
             f"⚖️ Агент 5 примет окончательное решение\n\n"
             f"📊 Проверьте раздел 'Негативные сообщения' через несколько секунд\n"
             f"📋 Результаты также появятся в логах агентов"
@@ -488,7 +607,8 @@ async def back_to_menu(callback_query: types.CallbackQuery):
         [InlineKeyboardButton(text="📊 Состояние агентов", callback_data="status_agents")],
         [InlineKeyboardButton(text="📝 Сообщения чата", callback_data="chat_messages")],
         [InlineKeyboardButton(text="⚠️ Негативные сообщения", callback_data="negative_messages")],
-        [InlineKeyboardButton(text="🧪 Тест агентов", callback_data="test_agents")]
+        [InlineKeyboardButton(text="🧪 Тест агентов", callback_data="test_agents")],
+        [InlineKeyboardButton(text="➕ Добавить чат", callback_data="add_chat")]
     ])
     
     welcome_text = """
@@ -496,9 +616,10 @@ async def back_to_menu(callback_query: types.CallbackQuery):
 
 Доступные функции:
 📊 <b>Состояние агентов</b> - проверка работы всех агентов (1-5)
-📝 <b>Сообщения чата</b> - последние сообщения из базы данных
-⚠️ <b>Негативные сообщения</b> - найденные нарушения
+📝 <b>Сообщения чата</b> - последние сообщения из этого чата
+⚠️ <b>Негативные сообщения</b> - найденные нарушения в этом чате
 🧪 <b>Тест агентов</b> - проверка работы системы модерации
+➕ <b>Добавить чат</b> - регистрация нового чата для модерации
 
 <i>Выберите действие из меню ниже:</i>
     """

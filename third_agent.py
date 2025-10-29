@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №3 — Модерация с GigaChat (обновленная версия на основе agent3.4)
+АГЕНТ 3.2 — Модерация с GigaChat (Интегрирован с PostgreSQL)
 """
 
 import requests
@@ -36,8 +36,8 @@ POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?s
 # ============================================================================
 # КОНФИГУРАЦИЯ GIGACHAT
 # ============================================================================
-ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.cv8YybaNK-3R-ALyaWB-AY1LGRKY8SBOguCeMJBYw4lYG9hdr8TS9nzY2xzOfMP0vX7jKrQ3rqxLOgj8IoDjxD9UL3HZlO1jhH75DoxvU68jHA0_5w_WNr6A82d3qvm2-2bdNkUp9eGwblY4I56eKdodRjJ2vscy9GrITu1lOPgzqP0ZI7D8wt_mqQyZjPEyMhmBqZcW7rExwN8ILaU36KysispjvBHZWKAcF77F4WOvmN0VAbs1ifmHUkWZY3g9gTJdpET2IP0k6u5i78rIX58eOTkCosIG19Il4byFf20GcluSMpKAZkdFXTkK6LBDQK-CD18-ZGCsMWaKthWFWg.My7TQEvIVBXO5vRZkmFoXA.T61aZMMnfFKNy-LEtbwYXuSaQfia6b_kUYvaiuqmcgVcRzfwsqOG7EFyuc_c60HCXR3_TueE_MEr49z92SVUOuTponbfzf54vartyhqnmPzHQvdD-57Ko8gQxAKojRXWBGGKTeCLFwPRtjkPWhAel9M1y0G0exRcwFfnHkEBG2EFJDHvtnmlFnkGf-cfWDn9AliObQj7LA6WTO5j_xTIgpJMeIcgb0-KGonYw_UUfkUeFUC2-bwcZpGDDW1PvG05_Seh1tfu6J60U_xtB8TpxAlWpucUbmf71Ka1lFstkRhQcrEB2DkTOztPbErkX7XcHVM_BeYPm8jeFcSLF6C-euS4Z2YMYmmwzMuOOD1Th3DcKABpnAs9FrUUOLM2zGHXGJxKPx5JbYTRUrzibqqMk0d4xywjTpgY7I0Xc7mh2JkpFAUjnClS-x9QwwW0UXZ_tFjSoCovNmitDHkv9cXkkXhhFvQ-QBLQ7ittBVRUUG4LgdY8KtoHMVT6CsoCDz6fwO2Wc55XYvjFeI24hla2unWFdcGG8ab2KjVhlsFZq9i2XIp1LryLx3xGgGP_1K9txHCxSDlQf5M5uKmtnCPawnl2W1bkpthTSPaoV_xmeRIr465B8dDR29SjSHIAeMrOamYDncyWkLvA-wc93teYgJ1EBqrP6zkKF_HiDpTtKns5ZABjF0BzJAjc3f_FlLDQOCYWhrwcnjNBf600-IDGdAxVq6mflPIOBvbimZc_QxQ.3mGdrfeOVuD6xYscptelPxZ7VHE-cys6w4psXGX5V7I"
-AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmE0MzRhNjExLTE2NGYtNDdjYS1iNTM2LThlMGViMmU0YzVmNg=="
+ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.wESCCGpAKhedFyZu53Xe8StqCwL22Wv4o0SWl_kRARYe1ReHdpsESOCx8wjyI-mKMyrXT-_GWdebs0xSBR3ocZFEeK-Nh6DURnxxHoVDKABhHaAKarA_MNpjU1OO1YSV69Pxu2qb1kxn4KZZvbiDl1sDi-nUt0J9fViU9I38fdGEwTJkCxU6b9zhcK3AHtKIQEA3KbHRYCb0w5J4xYc40GZeLvlSg41YqqGAQDX0SnefcxxVJDkdL4PwINiGoSpQMUHlFJ-OnHdCMNF2aJHyZZxmh9SDQoEhlZpxw72Q4rQz9gDr215MPIB1a8ujLdJ3_qagzauRAaJSVH-2Rd3E5Q.K5PFOlabJf9FehG7e8xl9w.G_JyR9VYnvrzexaE0JJV0nwN0ERnUzmlyYopyPNyAkGyvNneb85gnjaVvueWIJyeVw1FCSFtXD_zGwpTRdMVCCLGbVG-J4yesQF3M37tmQRHv1bnmX3c5bn2nRx1dG0V9UYhJlJPu6z99foBPN3ql_OoLdVDkezePvJRx2DmRZ5gF1mnZJ_4G377XRPbFIF9VbOdjKOoZmFH9TFp1Yf1g1piY_S8kQkftjcRKfkH_uTtnxtND52m5MqKt5MUuMRZkDUFs_xcfpBCM62_HkrvT4SH25YcocuVlG_7DKQNG6DIQL3kVPzIGgHYgkajJ5NzDfzfLrfgzTQWhIv1wv3Gt-JonAESyVrdSJM8bMZkJwQ4bYJSYs-wTv_QHGkdmLgt8MI56p35rtWgh9UqFORqvWebuNdRCmfIeFUDMXAtWPyHd6rP0gwLFKND0Hs2YB8vDd5znT-MmoIj4iOHJGmQoDAx3hN1Ix7_EAeL_xTbVB5W9mUlYwbphHL94h1OY9BEEDPT2urePVrt6r83d7poVATDbande88IvFbIIzLcCaOtoi6ACIPOdMKtrFWZclBf0PT8JIDOzxQpmcVVPbRLX79_YUW0OIhVzSBm4swfYcUUf6c7fz-EP-mozxkuVbeyf6lh64VRKQpSviSXlye-ypBRZgW4JWBSDl2TLiX91K_GpuVTvr7ujvVsq56OYI3u5Oy3mOnFbF1F5vnpEmERTWPnAF98f1Cuwv_cglIm0dQ.Ibhh5i_xa9wc_wfJlqv9lm8hED2eHyzewglZAJ8JKZQ"
+AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmE5NzBiNjJmLWNkYzMtNDM2Yy1iODA5LTc2YjhmZTI4YzBhMQ=="
 
 # ============================================================================
 # КОНФИГУРАЦИЯ REDIS
@@ -107,7 +107,7 @@ class NegativeMessage(Base):
     negative_reason = Column(Text)
     is_sent_to_moderators = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    agent_id = Column(Integer)
+    agent_id = Column(Integer) # Какой агент отметил как негативное
     
     chat = relationship('Chat', back_populates='negative_messages')
 
@@ -122,8 +122,33 @@ def get_db_session():
     return SessionLocal()
 
 # ============================================================================
+# СПИСОК НЕЦЕНЗУРНЫХ СЛОВ (для дополнительной проверки)
+# ============================================================================
+PROFANITY_WORDS = [
+    "сука", "чурка", "дурак", "идиот", "тупой", "долбоеб", "мудак",
+    "хуй", "пизд", "ебан", "бля", "гандон", "уебок", "чмо", "дебил",
+    "даун", "урод", "мразь", "быдло", "козел", "свинья", "сволочь"
+]
+
+DISCRIMINATION_WORDS = [
+    "чурка", "хохол", "москаль", "жид", "негр", "азиат",
+    "узкоглазый", "черножопый", "чучмек"
+]
+
+# ============================================================================
 # РАБОТА С GIGACHAT API
 # ============================================================================
+def check_profanity_simple(message):
+    """
+    Простая проверка на нецензурные слова (дополнительная фильтрация).
+    Возвращает True если найдена нецензурщина.
+    """
+    message_lower = message.lower()
+    for word in PROFANITY_WORDS + DISCRIMINATION_WORDS:
+        if word in message_lower:
+            return True, f"Обнаружено запрещённое слово: '{word}'"
+    return False, ""
+
 def check_message_with_gigachat(message, rules, prompt, token):
     """
     Отправляет запрос в GigaChat API для анализа сообщения.
@@ -170,6 +195,14 @@ def parse_gigachat_response(text, message):
     Парсит ответ GigaChat и определяет, нужен ли бан.
     """
     text_lower = text.lower()
+    
+    # Сначала проверяем простым поиском по словам
+    has_profanity, profanity_reason = check_profanity_simple(message)
+    if has_profanity:
+        return {
+            "ban": True,
+            "reason": f"Вердикт: да. {profanity_reason} (Автоматическая фильтрация)"
+        }
     
     # Ключевые слова для BAN
     ban_keywords = [
@@ -314,16 +347,30 @@ def moderation_agent_3(input_data, db_session):
             db_session.add(chat)
             db_session.commit()
         
-        message_obj = Message(
-            chat_id=chat.id,
-            message_id=message_id,
-            sender_username=username,
-            sender_id=user_id,
-            message_text=message,
-            message_link=message_link,
-            ai_response=result["reason"]
-        )
-        db_session.add(message_obj)
+        # Проверяем существующее сообщение
+        existing_message = db_session.query(Message).filter_by(
+            chat_id=chat.id, 
+            message_id=message_id
+        ).first()
+        
+        if existing_message:
+            # Обновляем AI response
+            existing_message.ai_response = result["reason"]
+            existing_message.processed_at = datetime.utcnow()
+        else:
+            # Создаем новое сообщение
+            message_obj = Message(
+                chat_id=chat.id,
+                message_id=message_id,
+                sender_username=username,
+                sender_id=user_id,
+                message_text=message,
+                message_link=message_link,
+                ai_response=result["reason"],
+                processed_at=datetime.utcnow()
+            )
+            db_session.add(message_obj)
+        
         db_session.commit()
         
         # Если обнаружено нарушение — сохраняем в negative_messages
@@ -406,8 +453,6 @@ class Agent3Worker:
                 self.redis_client.rpush(QUEUE_AGENT_5_INPUT, result_json)
                 logger.info(f"✅ Результат отправлен Агенту 5")
             
-            # Также отправляем в очередь Агента 4 для дополнительной проверки
-            self.redis_client.rpush(QUEUE_AGENT_4_INPUT, result_json)
             logger.info(f"✅ Результат отправлен в очередь")
             
         except Exception as e:
@@ -418,7 +463,6 @@ class Agent3Worker:
         logger.info(f"✅ Запущен. Ожидаю сообщения из: {QUEUE_AGENT_3_INPUT}")
         logger.info(f"   Отправляю результаты в: {QUEUE_AGENT_3_OUTPUT}")
         logger.info(f"   Отправляю в Агента 5: {QUEUE_AGENT_5_INPUT}")
-        logger.info(f"   Отправляю в Агента 4: {QUEUE_AGENT_4_INPUT}")
         logger.info("   Нажмите Ctrl+C для остановки\n")
         
         db_session = None
@@ -471,7 +515,7 @@ def create_health_check_server():
                     "status": "online",
                     "agent_id": 3,
                     "name": "Агент №3 (GigaChat)",
-                    "version": "3.4",
+                    "version": "3.2",
                     "timestamp": datetime.now().isoformat(),
                     "redis_queue": QUEUE_AGENT_3_INPUT,
                     "uptime_seconds": int(time.time())
@@ -501,7 +545,7 @@ if __name__ == "__main__":
         if mode == "test":
             # Тестирование
             test_input = {
-                "message": "Привет всем! Как дела?",
+                "message": "сука чурка",
                 "rules": [
                     "Запрещена реклама",
                     "Запрещены нецензурные выражения",
