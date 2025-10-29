@@ -65,7 +65,7 @@ class Config:
     MAX_REQUESTS_PER_SECOND = 8
     
     # ГигаЧат настройки - ГОТОВЫЙ ACCESS TOKEN
-    from token inport TOKEN
+    from token import TOKEN
     GIGACHAT_ACCESS_TOKEN = TOKEN
     @property
     def database_url(self) -> str:
