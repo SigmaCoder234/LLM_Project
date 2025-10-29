@@ -3,7 +3,7 @@ from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text,
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # --- НАСТРОЙКА ---
-DB_URL = "postgresql+psycopg2://user:password@localhost:5432/dbname"  # укажи свои данные подключения к Postgres!
+DB_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'  # укажи свои данные подключения к Postgres!
 AUTH_KEY = "YOUR_GIGACHAT_AUTH_KEY"
 
 # --- SQLAlchemy ORM ---
@@ -103,3 +103,4 @@ if __name__ == "__main__":
     ]
     chat_id = 1  # номер чата из БД (можно сделать параметром)
     agent_main(chat_id, rules)
+
