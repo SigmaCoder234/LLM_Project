@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №2 — Анализатор и распределитель (Обновленные токены)
+АГЕНТ №2 — Анализатор и распределитель (Mistral AI версия)
 """
 
-import requests
 import json
 import redis
 import time
-import logging
 from typing import Dict, Any
-import urllib3
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, BigInteger, Text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -19,42 +16,33 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import threading
+from mistralai.client import MistralClient
+from mistralai.models.chat_completion import ChatMessage
 
-# Отключаем warning SSL
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Импортируем централизованную конфигурацию
+from config import (
+    MISTRAL_API_KEY,
+    MISTRAL_MODEL,
+    MISTRAL_GENERATION_PARAMS,
+    POSTGRES_URL,
+    get_redis_config,
+    QUEUE_AGENT_2_INPUT,
+    QUEUE_AGENT_3_INPUT,
+    QUEUE_AGENT_4_INPUT,
+    AGENT_PORTS,
+    DEFAULT_RULES,
+    setup_logging
+)
 
 # ============================================================================
 # ЛОГИРОВАНИЕ
 # ============================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [АГЕНТ 2] %(levelname)s: %(message)s'
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging("АГЕНТ 2")
 
 # ============================================================================
-# КОНФИГУРАЦИЯ БД (ОДИНАКОВАЯ С АГЕНТОМ 3.2)
+# ИНИЦИАЛИЗАЦИЯ MISTRAL AI
 # ============================================================================
-POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
-
-# ============================================================================
-# КОНФИГУРАЦИЯ GIGACHAT (ОБНОВЛЕННЫЕ ТОКЕНЫ)
-# ============================================================================
-ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.rDxqb5-B5a_phZFd_mbBuuOMjeIpHbBOAssZ1M0j3K9F7wbJyn4wFxURTUKhZo8XKc4bUlW5V0LAI3QkwkGQIHJtznCS7Ij8PH41S1eWyHySMFo9u96zcFJApzKuoxXgmzsGk1Ibx5sEt8yQzqVcgqcXecM-S2rjifP849RZPbwbe1AAWP_8fIyasrQ7eNXXCYKgqfuCh6GWYuKglyC3ZSxnvjgRikGgWASbGG5qW5QzVg-dxqWel61rNuvZUUletTYlwY049WVoMgw1ziKQc6LlglqWul6IrTmKF-dcQYs_BB7GIfsRKVAitc3PA_zbpCOKJ-GdolYi0H3hhvgjbA.YuvTziLeup589XJTMqbv0A.NFbeLLa6eNvXCfhUW4DoqFhoZN-svSrNRt6v3qDnVDWuQTHT_AjddmtWa2ANIELs9dnuNPeuwVLM01pK8I8cgdAuWc1RtPsaok7ESx9CYvQBb3VWZAOy5h9p32Khg2B1yyZbL1kuEnEblvBJQTUUkzj3qNO2bIyb0InTdHIDLessLW_RIfWkhZWc7eia_I92MVvMem0WGl9iynlPl-hmsqOB_tGmzRDTH-aqv2f76EHOWFE1DMxcgh7EJLhHNrDHwygA_1jrylvhjLBJEfJWEbLMAThQ1emaJu9Dx30Kb8alCUz0nB6Bfw9E9xG5iQJPyX19s3WdcBPe9DAno3NrjkYDVgCh9G9qCDLYhx4pvhhh3mtd_IXaUstqPPk-vMOqAhVv64Yy-ZeYBnXEhcqXLt5UgD41Cm-ETCqAoGNVWpN-IYziuRRavN3AAivg-FZIRobN2OOhlahPkLyvOaLyVC5oCnEFSxZfkofnC5yafUs3dsQZ7X4Bmhx199k9cvLRBToFyTkWg6doJlSt_0Tg2cUm-4z-4JO1V48GoFlg7Tco8Sg3pLbH2teZMg8x3pR2EuJi7tS6W_JBEo-X3mUEdvOOcpw6j9VWDQ-nDAz6BHOdf6xKW_jqj64RdeGNbXzPDVwtsia2kZPvf0KhhhlHDKwVupgoPgxC4a6aE8Bl_8R71AW2x45U9rCnyTl050CBg1ufapBTfIY4j88zo2-3nNqAVdvDCLuhj4szO4ovg-Y.dwx2dXz4CSDmkDlUzkzee_NpyZJY7No-RyOq6VupZwE"
-AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmZmNWEyN2RjLWFlZmMtNGY0NC1hNmJlLTAzZmNiOTc0MjJkMg=="
-
-# ============================================================================
-# КОНФИГУРАЦИЯ REDIS
-# ============================================================================
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-REDIS_DB = 0
-REDIS_PASSWORD = None
-
-# Очереди для взаимодействия с другими агентами
-QUEUE_AGENT_2_INPUT = "queue:agent2:input"
-QUEUE_AGENT_3_INPUT = "queue:agent3:input"
-QUEUE_AGENT_4_INPUT = "queue:agent4:input"
+mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
 
 # ============================================================================
 # МОДЕЛИ БД (ЕДИНЫЕ ДЛЯ ВСЕХ АГЕНТОВ)
@@ -69,6 +57,7 @@ class Chat(Base):
     chat_type = Column(String, default='group')
     added_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    custom_rules = Column(Text, nullable=True)  # Новое поле для кастомных правил
     
     messages = relationship('Message', back_populates='chat', cascade="all, delete")
     moderators = relationship('Moderator', back_populates='chat', cascade="all, delete")
@@ -125,15 +114,55 @@ def get_db_session():
     return SessionLocal()
 
 # ============================================================================
-# АНАЛИЗ СООБЩЕНИЙ ЧЕРЕЗ GIGACHAT
+# ФУНКЦИИ ДЛЯ РАБОТЫ С ПРАВИЛАМИ ЧАТА
 # ============================================================================
-def analyze_message_with_gigachat(message: str, rules: list, token: str) -> dict:
-    """Детальный анализ сообщения через GigaChat для определения следующего шага"""
-    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    
-    rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
-    system_msg = f"""Ты — анализатор сообщений для системы модерации.
-    
+def get_chat_rules(chat_id: int, db_session) -> list:
+    """Получает правила для конкретного чата"""
+    try:
+        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
+        if chat and chat.custom_rules:
+            # Если есть кастомные правила, используем их
+            rules_list = [rule.strip() for rule in chat.custom_rules.split('\n') if rule.strip()]
+            return rules_list
+        else:
+            # Иначе используем стандартные
+            return DEFAULT_RULES
+    except Exception as e:
+        logger.error(f"Ошибка получения правил для чата {chat_id}: {e}")
+        return DEFAULT_RULES
+
+def save_chat_rules(chat_id: int, rules: list, db_session) -> bool:
+    """Сохраняет правила для конкретного чата"""
+    try:
+        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
+        if not chat:
+            chat = Chat(tg_chat_id=str(chat_id))
+            db_session.add(chat)
+            db_session.commit()
+        
+        # Сохраняем правила как текст, разделенный переносами строк
+        chat.custom_rules = '\n'.join(rules)
+        db_session.commit()
+        logger.info(f"Правила для чата {chat_id} обновлены: {len(rules)} правил")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения правил для чата {chat_id}: {e}")
+        return False
+
+# ============================================================================
+# АНАЛИЗ СООБЩЕНИЙ ЧЕРЕЗ MISTRAL AI
+# ============================================================================
+def analyze_message_with_mistral(message: str, rules: list) -> dict:
+    """Детальный анализ сообщения через Mistral AI для определения следующего шага"""
+    try:
+        # Если правил нет, используем стандартные
+        if not rules:
+            rules = DEFAULT_RULES
+        
+        rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
+        
+        system_message = f"""Ты — анализатор сообщений для системы модерации Telegram чата.
+        
 ПРАВИЛА ЧАТА:
 {rules_text}
 
@@ -153,29 +182,22 @@ def analyze_message_with_gigachat(message: str, rules: list, token: str) -> dict
 СТРАТЕГИЯ: [SIMPLE/COMPLEX/BOTH]
 ПРИОРИТЕТ: [LOW/MEDIUM/HIGH]
 ОБЪЯСНЕНИЕ: [краткое обоснование решения]"""
-    
-    user_msg = f"Сообщение: \"{message}\""
-    
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
-    data = {
-        "model": "GigaChat",
-        "messages": [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg}
-        ],
-        "temperature": 0.2,
-        "max_tokens": 200
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=20, verify=False)
-        response.raise_for_status()
-        result = response.json()
-        content = result["choices"][0]["message"]["content"]
+        
+        user_message = f"Сообщение: \"{message}\""
+        
+        messages = [
+            ChatMessage(role="system", content=system_message),
+            ChatMessage(role="user", content=user_message)
+        ]
+        
+        response = mistral_client.chat(
+            model=MISTRAL_MODEL,
+            messages=messages,
+            temperature=MISTRAL_GENERATION_PARAMS["temperature"],
+            max_tokens=MISTRAL_GENERATION_PARAMS["max_tokens"]
+        )
+        
+        content = response.choices[0].message.content
         
         # Парсим ответ
         content_lower = content.lower()
@@ -213,17 +235,21 @@ def analyze_message_with_gigachat(message: str, rules: list, token: str) -> dict
             "strategy": strategy,
             "priority": priority,
             "reasoning": content,
+            "rules_used": rules,
+            "ai_model": MISTRAL_MODEL,
             "status": "success"
         }
         
     except Exception as e:
-        logger.error(f"Ошибка GigaChat анализа: {e}")
+        logger.error(f"Ошибка Mistral AI анализа: {e}")
         # При ошибке используем консервативный подход
         return {
             "severity": 7,
             "strategy": "BOTH",
             "priority": "MEDIUM",
-            "reasoning": f"Ошибка анализа: {e}. Используем полный анализ.",
+            "reasoning": f"Ошибка анализа Mistral AI: {e}. Используем полный анализ.",
+            "rules_used": rules if rules else DEFAULT_RULES,
+            "ai_model": "error",
             "status": "error"
         }
 
@@ -232,7 +258,7 @@ def analyze_message_with_gigachat(message: str, rules: list, token: str) -> dict
 # ============================================================================
 def analysis_agent_2(input_data, db_session):
     """
-    АГЕНТ 2 — Анализатор и распределитель.
+    АГЕНТ 2 — Анализатор и распределитель (Mistral AI).
     Получает данные от Агента 1 и решает, какие агенты использовать для модерации.
     """
     message = input_data.get("message", "")
@@ -259,21 +285,17 @@ def analysis_agent_2(input_data, db_session):
             "status": "skipped"
         }
     
+    # Получаем правила для конкретного чата или используем стандартные
     if not rules:
-        rules = [
-            "Запрещена реклама сторонних сообществ",
-            "Запрещены нецензурные выражения и оскорбления",
-            "Запрещена дискриминация по любым признакам",
-            "Запрещен спам и флуд"
-        ]
+        rules = get_chat_rules(chat_id, db_session)
     
-    # Детальный анализ через GigaChat
-    analysis = analyze_message_with_gigachat(message, rules, ACCESS_TOKEN)
+    # Детальный анализ через Mistral AI
+    analysis = analyze_message_with_mistral(message, rules)
     
     # Подготавливаем данные для агентов 3 и 4
     moderation_data = {
         "message": message,
-        "rules": rules,
+        "rules": analysis["rules_used"],
         "user_id": user_id,
         "username": username,
         "chat_id": chat_id,
@@ -296,7 +318,7 @@ def analysis_agent_2(input_data, db_session):
             
             if message_obj:
                 existing_response = message_obj.ai_response or ""
-                message_obj.ai_response = f"{existing_response}\n[АГЕНТ 2] {analysis['reasoning']}"
+                message_obj.ai_response = f"{existing_response}\n[АГЕНТ 2 - Mistral] {analysis['reasoning']}"
                 db_session.commit()
                 
     except Exception as e:
@@ -315,15 +337,17 @@ def analysis_agent_2(input_data, db_session):
         "chat_id": chat_id,
         "message_id": message_id,
         "message_link": message_link,
-        "rules": rules,
+        "rules": analysis["rules_used"],
         "moderation_data": moderation_data,
         "send_to_agent_3": analysis["strategy"] in ["COMPLEX", "BOTH"],
         "send_to_agent_4": analysis["strategy"] in ["SIMPLE", "BOTH"],
+        "ai_model": analysis["ai_model"],
         "status": analysis["status"],
         "timestamp": datetime.now().isoformat()
     }
     
     logger.info(f"📊 Стратегия: {analysis['strategy']}, Серьезность: {analysis['severity']}/10, Приоритет: {analysis['priority']}")
+    logger.info(f"📋 Правил используется: {len(analysis['rules_used'])}, Модель: {analysis.get('ai_model', 'Mistral')}")
     
     return output
 
@@ -333,16 +357,10 @@ def analysis_agent_2(input_data, db_session):
 class Agent2Worker:
     def __init__(self):
         try:
-            redis_config = {
-                "host": REDIS_HOST,
-                "port": REDIS_PORT,
-                "db": REDIS_DB,
-                "password": REDIS_PASSWORD,
-                "decode_responses": True
-            }
+            redis_config = get_redis_config()
             self.redis_client = redis.Redis(**redis_config)
             self.redis_client.ping()
-            logger.info(f"✅ Подключение к Redis успешно: {REDIS_HOST}:{REDIS_PORT}")
+            logger.info(f"✅ Подключение к Redis успешно")
         except Exception as e:
             logger.error(f"❌ Не удалось подключиться к Redis: {e}")
             raise
@@ -381,7 +399,7 @@ class Agent2Worker:
                 moderation_data = result.get("moderation_data", {})
                 result_json = json.dumps(moderation_data, ensure_ascii=False)
                 self.redis_client.rpush(QUEUE_AGENT_3_INPUT, result_json)
-                logger.info(f"✅ Отправлено агенту 3")
+                logger.info(f"✅ Отправлено агенту 3 (Mistral)")
                 sent_count += 1
             except Exception as e:
                 logger.error(f"Не удалось отправить агенту 3: {e}")
@@ -391,7 +409,7 @@ class Agent2Worker:
                 moderation_data = result.get("moderation_data", {})
                 result_json = json.dumps(moderation_data, ensure_ascii=False)
                 self.redis_client.rpush(QUEUE_AGENT_4_INPUT, result_json)
-                logger.info(f"✅ Отправлено агенту 4")
+                logger.info(f"✅ Отправлено агенту 4 (Эвристика + Mistral)")
                 sent_count += 1
             except Exception as e:
                 logger.error(f"Не удалось отправить агенту 4: {e}")
@@ -400,7 +418,8 @@ class Agent2Worker:
     
     def run(self):
         """Главный цикл обработки сообщений"""
-        logger.info(f"✅ Агент 2 запущен")
+        logger.info(f"✅ Агент 2 запущен (Mistral AI API, v2.4)")
+        logger.info(f"   Модель: {MISTRAL_MODEL}")
         logger.info(f"   Слушаю очередь: {QUEUE_AGENT_2_INPUT}")
         logger.info(f"   Отправляю в Агента 3: {QUEUE_AGENT_3_INPUT}")
         logger.info(f"   Отправляю в Агента 4: {QUEUE_AGENT_4_INPUT}")
@@ -445,9 +464,9 @@ class Agent2Worker:
 # FASTAPI ПРИЛОЖЕНИЕ
 # ============================================================================
 app = FastAPI(
-    title="🤖 Агент №2 - Анализатор",
+    title="🤖 Агент №2 - Анализатор (Mistral AI)",
     description="Анализ и распределение сообщений между модераторами",
-    version="2.0"
+    version="2.4"
 )
 
 app.add_middleware(
@@ -465,7 +484,11 @@ async def health_check():
         "status": "online",
         "agent_id": 2,
         "name": "Агент №2 (Анализатор)",
-        "version": "2.0",
+        "version": "2.4 (Mistral AI)",
+        "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
+        "prompt_version": "v2.0 - кастомные правила",
+        "configuration": "Environment variables (.env)",
+        "default_rules": DEFAULT_RULES,
         "timestamp": datetime.now().isoformat(),
         "redis_queue": QUEUE_AGENT_2_INPUT,
         "uptime_seconds": int(time.time())
@@ -481,6 +504,36 @@ async def process_message_endpoint(message_data: dict):
     finally:
         db_session.close()
 
+@app.get("/chat_rules/{chat_id}")
+async def get_chat_rules_endpoint(chat_id: int):
+    """Получить правила для конкретного чата"""
+    db_session = get_db_session()
+    try:
+        rules = get_chat_rules(chat_id, db_session)
+        return {
+            "chat_id": chat_id,
+            "rules": rules,
+            "is_default": rules == DEFAULT_RULES
+        }
+    finally:
+        db_session.close()
+
+@app.post("/chat_rules/{chat_id}")
+async def set_chat_rules_endpoint(chat_id: int, rules_data: dict):
+    """Установить правила для конкретного чата"""
+    db_session = get_db_session()
+    try:
+        rules = rules_data.get("rules", [])
+        success = save_chat_rules(chat_id, rules, db_session)
+        return {
+            "chat_id": chat_id,
+            "success": success,
+            "rules": rules,
+            "rules_count": len(rules)
+        }
+    finally:
+        db_session.close()
+
 @app.get("/stats")
 async def get_stats():
     """Статистика работы агента"""
@@ -488,11 +541,17 @@ async def get_stats():
     try:
         total_messages = db_session.query(Message).count()
         negative_messages = db_session.query(NegativeMessage).count()
+        chats_with_custom_rules = db_session.query(Chat).filter(Chat.custom_rules.isnot(None)).count()
         
         return {
             "total_messages": total_messages,
             "negative_messages": negative_messages,
+            "chats_with_custom_rules": chats_with_custom_rules,
             "agent_id": 2,
+            "version": "2.4 (Mistral AI)",
+            "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
+            "configuration": "Environment variables",
+            "default_rules": DEFAULT_RULES,
             "timestamp": datetime.now().isoformat()
         }
     finally:
@@ -503,7 +562,7 @@ async def get_stats():
 # ============================================================================
 def run_fastapi():
     """Запуск FastAPI сервера"""
-    uvicorn.run(app, host="localhost", port=8002, log_level="info")
+    uvicorn.run(app, host="localhost", port=AGENT_PORTS[2], log_level="info")
 
 # ============================================================================
 # ТОЧКА ВХОДА
@@ -516,12 +575,8 @@ if __name__ == "__main__":
         if mode == "test":
             # Тестирование
             test_input = {
-                "message": "Идиот, сука, вступайте в наш канал @spam!",
-                "rules": [
-                    "Запрещена реклама",
-                    "Запрещены нецензурные выражения",
-                    "Запрещены оскорбления"
-                ],
+                "message": "Все эти черные должны убираться отсюда!",
+                "rules": [],  # Тест без правил
                 "user_id": 456,
                 "username": "test_user",
                 "chat_id": -200,
@@ -540,7 +595,7 @@ if __name__ == "__main__":
         # Запуск FastAPI в отдельном потоке
         fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
         fastapi_thread.start()
-        logger.info("✅ FastAPI сервер запущен на порту 8002")
+        logger.info(f"✅ FastAPI сервер запущен на порту {AGENT_PORTS[2]}")
         
         # Запуск основного Redis worker
         try:

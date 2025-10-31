@@ -1,0 +1,37 @@
+# ============================================================================
+# TeleGuard - Конфигурация переменных окружения (Mistral AI версия)
+# ============================================================================
+
+# Mistral AI Configuration
+MISTRAL_API_KEY=ygeDdoQrYFW5iM8aVw2p18pPZ1se30ow
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN=8320009669:AAHiVLu-Em8EOXBNHYrJ0UhVX3mMMTm8S_g
+
+# Database Configuration
+POSTGRES_URL=postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable
+POSTGRES_HOST=176.108.248.211
+POSTGRES_PORT=5432
+POSTGRES_USER=tguser
+POSTGRES_PASSWORD=mnvm7110
+POSTGRES_DB=teleguard_db
+
+# Redis Configuration
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=
+
+# Application Configuration
+DEBUG=False
+LOG_LEVEL=INFO
+
+# Timezone Configuration
+TIMEZONE=Europe/Moscow
+
+# AI Provider Configuration
+AI_PROVIDER=mistral
+MISTRAL_MODEL=mistral-large-latest
+
+# Security Configuration (необязательно, для дополнительной безопасности)
+SECRET_KEY=your_secret_key_here_change_in_production

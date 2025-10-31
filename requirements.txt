@@ -1,0 +1,29 @@
+# TeleGuard - Многоагентная система модерации Telegram
+# Зависимости Python для Mistral AI версии
+
+# Mistral AI API
+mistralai>=0.4.0
+
+# Telegram Bot
+aiogram>=3.0.0
+
+# База данных
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.5
+
+# Redis
+redis>=4.5.0
+
+# FastAPI для агентов
+fastapi>=0.100.0
+uvicorn>=0.22.0
+
+# HTTP запросы
+requests>=2.31.0
+
+# Переменные окружения
+python-dotenv>=1.0.0
+
+# Дополнительные зависимости
+aiofiles>=23.1.0
+pydantic>=2.0.0

@@ -1,276 +1,323 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №4 — Эвристический модератор (Обновленные токены)
+АГЕНТ №4 — Эвристический модератор + OpenAI резерв (с конфигурацией из .env)
 """
 
-import requests
 import json
 import redis
 import time
-import logging
 import re
-from typing import Dict, Any, List, Optional, Tuple
-import urllib3
+from typing import Dict, Any, List
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, BigInteger, Text
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-import asyncio
+from openai import OpenAI
 
-# Отключаем warning SSL
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Импортируем централизованную конфигурацию
+from config import (
+    OPENAI_API_KEY,
+    get_redis_config,
+    QUEUE_AGENT_4_INPUT,
+    QUEUE_AGENT_4_OUTPUT,
+    QUEUE_AGENT_5_INPUT,
+    AGENT_PORTS,
+    DEFAULT_RULES,
+    setup_logging
+)
 
 # ============================================================================
 # ЛОГИРОВАНИЕ
 # ============================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [АГЕНТ 4] %(levelname)s: %(message)s'
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging("АГЕНТ 4")
 
 # ============================================================================
-# КОНФИГУРАЦИЯ БД (ОДИНАКОВАЯ С АГЕНТОМ 3.2)
+# ИНИЦИАЛИЗАЦИЯ OPENAI
 # ============================================================================
-POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ============================================================================
-# КОНФИГУРАЦИЯ GIGACHAT (ОБНОВЛЕННЫЕ ТОКЕНЫ)
+# ЭВРИСТИЧЕСКИЕ ПРАВИЛА И ПАТТЕРНЫ
 # ============================================================================
-ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.rDxqb5-B5a_phZFd_mbBuuOMjeIpHbBOAssZ1M0j3K9F7wbJyn4wFxURTUKhZo8XKc4bUlW5V0LAI3QkwkGQIHJtznCS7Ij8PH41S1eWyHySMFo9u96zcFJApzKuoxXgmzsGk1Ibx5sEt8yQzqVcgqcXecM-S2rjifP849RZPbwbe1AAWP_8fIyasrQ7eNXXCYKgqfuCh6GWYuKglyC3ZSxnvjgRikGgWASbGG5qW5QzVg-dxqWel61rNuvZUUletTYlwY049WVoMgw1ziKQc6LlglqWul6IrTmKF-dcQYs_BB7GIfsRKVAitc3PA_zbpCOKJ-GdolYi0H3hhvgjbA.YuvTziLeup589XJTMqbv0A.NFbeLLa6eNvXCfhUW4DoqFhoZN-svSrNRt6v3qDnVDWuQTHT_AjddmtWa2ANIELs9dnuNPeuwVLM01pK8I8cgdAuWc1RtPsaok7ESx9CYvQBb3VWZAOy5h9p32Khg2B1yyZbL1kuEnEblvBJQTUUkzj3qNO2bIyb0InTdHIDLessLW_RIfWkhZWc7eia_I92MVvMem0WGl9iynlPl-hmsqOB_tGmzRDTH-aqv2f76EHOWFE1DMxcgh7EJLhHNrDHwygA_1jrylvhjLBJEfJWEbLMAThQ1emaJu9Dx30Kb8alCUz0nB6Bfw9E9xG5iQJPyX19s3WdcBPe9DAno3NrjkYDVgCh9G9qCDLYhx4pvhhh3mtd_IXaUstqPPk-vMOqAhVv64Yy-ZeYBnXEhcqXLt5UgD41Cm-ETCqAoGNVWpN-IYziuRRavN3AAivg-FZIRobN2OOhlahPkLyvOaLyVC5oCnEFSxZfkofnC5yafUs3dsQZ7X4Bmhx199k9cvLRBToFyTkWg6doJlSt_0Tg2cUm-4z-4JO1V48GoFlg7Tco8Sg3pLbH2teZMg8x3pR2EuJi7tS6W_JBEo-X3mUEdvOOcpw6j9VWDQ-nDAz6BHOdf6xKW_jqj64RdeGNbXzPDVwtsia2kZPvf0KhhhlHDKwVupgoPgxC4a6aE8Bl_8R71AW2x45U9rCnyTl050CBg1ufapBTfIY4j88zo2-3nNqAVdvDCLuhj4szO4ovg-Y.dwx2dXz4CSDmkDlUzkzee_NpyZJY7No-RyOq6VupZwE"
-AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmZmNWEyN2RjLWFlZmMtNGY0NC1hNmJlLTAzZmNiOTc0MjJkMg=="
 
-# ============================================================================
-# КОНФИГУРАЦИЯ REDIS
-# ============================================================================
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-REDIS_DB = 0
-REDIS_PASSWORD = None
-
-# Очереди для взаимодействия с другими агентами
-QUEUE_AGENT_4_INPUT = "queue:agent4:input"
-QUEUE_AGENT_4_OUTPUT = "queue:agent4:output"
-QUEUE_AGENT_5_INPUT = "queue:agent5:input"
-
-# ============================================================================
-# МОДЕЛИ БД (ЕДИНЫЕ ДЛЯ ВСЕХ АГЕНТОВ)
-# ============================================================================
-Base = declarative_base()
-
-class Chat(Base):
-    __tablename__ = 'chats'
-    id = Column(Integer, primary_key=True)
-    tg_chat_id = Column(String, unique=True, nullable=False)
-    title = Column(String, nullable=True)
-    chat_type = Column(String, default='group')
-    added_at = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Boolean, default=True)
+# Список матерных и токсичных слов (расширенный)
+PROFANITY_PATTERNS = [
+    # Основные нецензурные слова
+    r'\b(хуй|хуя|хуё|хуи|хую)\b',
+    r'\b(пизд[аеиоу]|пиздец|пиздёж)\b', 
+    r'\b(ебать|ебал|ебёт|ебут|ебали|ебаный|ебучий)\b',
+    r'\b(сука|суки|сучка|сучий)\b',
+    r'\b(блядь|блять|бля|блея)\b',
+    r'\b(долбоёб|долбаёб|мудак|мудила)\b',
+    r'\b(пидор|пидар|пидр|гомик)\b',
+    r'\b(говно|говнюк|говняшка)\b',
     
-    messages = relationship('Message', back_populates='chat', cascade="all, delete")
-    moderators = relationship('Moderator', back_populates='chat', cascade="all, delete")
-    negative_messages = relationship('NegativeMessage', back_populates='chat', cascade="all, delete")
-
-class Message(Base):
-    __tablename__ = 'messages'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    message_id = Column(BigInteger, nullable=False)
-    sender_username = Column(String)
-    sender_id = Column(BigInteger)
-    message_text = Column(Text)
-    message_link = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    processed_at = Column(DateTime)
-    ai_response = Column(Text)
+    # Оскорбления
+    r'\b(дурак|дура|дебил|идиот|тупой|тупица)\b',
+    r'\b(кретин|придурок|дундук|балбес)\b',
+    r'\b(урод|уродина|уебок|уёбок)\b',
+    r'\b(тварь|сволочь|гад|падла)\b',
     
-    chat = relationship('Chat', back_populates='messages')
+    # Вариации с заменой букв
+    r'\b(х[уy][йi]|п[иi][зs][дd]|[еe]б[аa])\b',
+    r'\b(с[уy]к[аa]|бл[яy][дd]ь?)\b',
+]
 
-class Moderator(Base):
-    __tablename__ = 'moderators'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    username = Column(String)
-    telegram_user_id = Column(BigInteger)
-    is_active = Column(Boolean, default=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
+# Паттерны спама и рекламы
+SPAM_PATTERNS = [
+    # Призывы к действию
+    r'\b(переходи|кликай|жми|нажимай|вступай|подписывайся)\b',
+    r'\b(заходи|регистрируйся|скачивай|покупай)\b',
     
-    chat = relationship('Chat', back_populates='moderators')
-
-class NegativeMessage(Base):
-    __tablename__ = 'negative_messages'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    message_link = Column(String)
-    sender_username = Column(String)
-    sender_id = Column(BigInteger)
-    negative_reason = Column(Text)
-    is_sent_to_moderators = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    agent_id = Column(Integer)
+    # Коммерческие термины
+    r'\b(скидка|акция|распродажа|дешево|выгодно)\b',
+    r'\b(заработок|доход|прибыль|инвестиции)\b',
+    r'\b(продам|куплю|обмен|торговля)\b',
     
-    chat = relationship('Chat', back_populates='negative_messages')
+    # Ссылки и каналы (согласно новым правилам v2.0)
+    r'@[a-zA-Z0-9_]+',  # Упоминания каналов/пользователей
+    r't\.me/[a-zA-Z0-9_]+',  # Telegram ссылки
+    r'https?://[^\s]+',  # HTTP ссылки
+    r'www\.[^\s]+',  # Веб-сайты
+    
+    # Эмодзи спам
+    r'[📢📣🎉💰🔥⚡]{3,}',  # 3+ одинаковых эмодзи
+]
+
+# Паттерны дискриминации (согласно новым правилам v2.0)
+DISCRIMINATION_PATTERNS = [
+    # Расовые термины
+    r'\b(негр|ниггер|черножоп|чурка|хач|хохол)\b',
+    r'\b(жид|еврей[а-я]*\s*(плохо|хуйово))\b',
+    r'\b(цыган|цыганё|цыганка)\s*[а-я]*\b',
+    r'\b(узкогляз|косоглаз|раскосый)\b',
+    
+    # Национальная дискриминация  
+    r'\b(москаль|кацап|бандера|укроп)\b',
+    r'\b(чурбан|лицо кавказской национальности)\b',
+    r'\b(азиат|узбек|таджик|киргиз)\s+[а-я]*\b',
+    
+    # Обобщающие дискриминационные высказывания
+    r'все\s+(евреи|негры|цыгане|[а-я]+ы)\s+(плохие|воры|дураки)',
+    r'эти\s+(черные|желтые|белые)\s+должны',
+]
+
+# Флуд паттерны
+FLOOD_PATTERNS = [
+    r'(.)\1{10,}',  # 10+ одинаковых символов подряд
+    r'([а-яё])\1{5,}',  # 5+ одинаковых русских букв
+    r'[!]{5,}|[?]{5,}|[.]{5,}',  # 5+ знаков препинания
+]
 
 # ============================================================================
-# ИНИЦИАЛИЗАЦИЯ БД И REDIS
+# ЭВРИСТИЧЕСКИЙ АНАЛИЗ
 # ============================================================================
-engine = create_engine(POSTGRES_URL)
-Base.metadata.create_all(engine)
-SessionLocal = sessionmaker(bind=engine)
+def check_profanity(message: str) -> tuple:
+    """Проверка на нецензурную лексику"""
+    message_lower = message.lower()
+    violations = []
+    
+    for pattern in PROFANITY_PATTERNS:
+        matches = re.findall(pattern, message_lower, re.IGNORECASE)
+        if matches:
+            violations.extend(matches)
+    
+    if violations:
+        confidence = min(0.9, 0.6 + len(violations) * 0.1)  # 60-90%
+        return True, f"Обнаружена нецензурная лексика: {', '.join(set(violations))}", confidence
+    
+    return False, "", 0.0
 
-def get_db_session():
-    return SessionLocal()
+def check_spam(message: str) -> tuple:
+    """Проверка на спам и рекламу"""
+    message_lower = message.lower()
+    violations = []
+    
+    for pattern in SPAM_PATTERNS:
+        matches = re.findall(pattern, message_lower, re.IGNORECASE)
+        if matches:
+            violations.extend(matches)
+    
+    if violations:
+        confidence = min(0.85, 0.5 + len(violations) * 0.1)  # 50-85%
+        return True, f"Обнаружен спам/реклама: {', '.join(set(violations))}", confidence
+    
+    return False, "", 0.0
 
-# ============================================================================
-# ЭВРИСТИЧЕСКИЙ АНАЛИЗАТОР
-# ============================================================================
-class HeuristicAnalyzer:
+def check_discrimination(message: str) -> tuple:
+    """Проверка на дискриминацию (согласно правилам v2.0)"""
+    message_lower = message.lower()
+    violations = []
+    
+    for pattern in DISCRIMINATION_PATTERNS:
+        matches = re.findall(pattern, message_lower, re.IGNORECASE)
+        if matches:
+            violations.extend(matches)
+    
+    if violations:
+        confidence = min(0.95, 0.7 + len(violations) * 0.1)  # 70-95%
+        return True, f"Обнаружена дискриминация: {', '.join(set(violations))}", confidence
+    
+    return False, "", 0.0
+
+def check_flood(message: str) -> tuple:
+    """Проверка на флуд"""
+    violations = []
+    
+    for pattern in FLOOD_PATTERNS:
+        matches = re.findall(pattern, message, re.IGNORECASE)
+        if matches:
+            violations.extend(matches)
+    
+    if violations:
+        confidence = 0.75  # Средняя уверенность для флуда
+        return True, f"Обнаружен флуд: повторяющиеся символы", confidence
+    
+    return False, "", 0.0
+
+def heuristic_analysis(message: str, rules: List[str]) -> dict:
     """
-    Эвристический анализатор сообщений для Агента 4.
-    Использует правила, паттерны и regex для анализа без ИИ.
+    Комплексный эвристический анализ сообщения.
+    Возвращает результат в новом формате v2.0
     """
+    violations = []
+    max_confidence = 0.0
+    main_reason = ""
     
-    def __init__(self):
-        # Паттерны для обнаружения спама/рекламы
-        self.spam_patterns = [
-            r'вступай(те)?\\s+в\\s+(наш|наша|мой)',
-            r'подпис(ыв)?ай(ся|тесь)?\\s+(на|в)',
-            r'переход(и(те)?)?\\s+по\\s+ссылке', 
-            r'жми\\s+(сюда|тут|на\\s+ссылку)',
-            r'@\\w+',  # Упоминание других каналов
-            r'https?://\\S+',  # Ссылки
-            r't\\.me/\\S+',  # Telegram ссылки
-        ]
-        
-        # Паттерны оскорблений
-        self.insult_patterns = [
-            r'\\b(идиот|дурак|тупой|глупый|мудак)\\b',
-            r'\\b(придурок|дебил|имбецил|кретин)\\b',
-            r'\\b(урод|мразь|быдло|козел|свинья)\\b'
-        ]
-        
-        # Паттерны нецензурной лексики
-        self.profanity_patterns = [
-            r'\\b(сука|хуй|пизд|ебать|бля|блять)\\b',
-            r'\\b(гандон|уебок|чмо|долбоеб)\\b'
-        ]
-        
-        # Паттерны дискриминации
-        self.discrimination_patterns = [
-            r'\\b(чурка|хохол|москаль|жид|негр)\\b',
-            r'\\b(узкоглазый|черножопый|чучмек)\\b'
-        ]
-        
-        # Паттерны флуда
-        self.flood_patterns = [
-            r'([А-Яа-я])\\1{4,}',  # Повторяющиеся символы
-            r'[!?]{3,}',  # Много знаков препинания
-            r'[A-ZА-Я]{10,}',  # КАПС
-        ]
+    # Проверяем все виды нарушений
+    checks = [
+        check_profanity(message),
+        check_spam(message), 
+        check_discrimination(message),
+        check_flood(message)
+    ]
     
-    def check_spam(self, message: str) -> Tuple[bool, str]:
-        """Проверка на спам и рекламу"""
-        message_lower = message.lower()
-        for pattern in self.spam_patterns:
-            if re.search(pattern, message_lower):
-                return True, f"Обнаружена реклама/спам (паттерн: {pattern})"
-        
-        # Проверка на количество ссылок
-        links_count = len(re.findall(r'https?://|t\\.me/', message_lower))
-        if links_count >= 2:
-            return True, f"Множественные ссылки ({links_count} шт.) - признак спама"
-        
-        # Проверка на упоминание нескольких каналов
-        mentions = re.findall(r'@\\w+', message)
-        if len(mentions) >= 2:
-            return True, f"Упоминание нескольких каналов ({len(mentions)} шт.)"
-        
-        return False, ""
+    for has_violation, reason, confidence in checks:
+        if has_violation:
+            violations.append(reason)
+            if confidence > max_confidence:
+                max_confidence = confidence
+                main_reason = reason
     
-    def check_insults(self, message: str) -> Tuple[bool, str]:
-        """Проверка на оскорбления"""
-        message_lower = message.lower()
-        for pattern in self.insult_patterns:
-            match = re.search(pattern, message_lower)
-            if match:
-                return True, f"Обнаружено оскорбление: '{match.group()}'"
-        return False, ""
-    
-    def check_profanity(self, message: str) -> Tuple[bool, str]:
-        """Проверка на нецензурную лексику"""
-        message_lower = message.lower()
-        for pattern in self.profanity_patterns:
-            match = re.search(pattern, message_lower)
-            if match:
-                return True, f"Обнаружена нецензурная лексика: '{match.group()}'"
-        return False, ""
-    
-    def check_discrimination(self, message: str) -> Tuple[bool, str]:
-        """Проверка на дискриминацию"""
-        message_lower = message.lower()
-        for pattern in self.discrimination_patterns:
-            match = re.search(pattern, message_lower)
-            if match:
-                return True, f"Обнаружена дискриминация: '{match.group()}'"
-        return False, ""
-    
-    def check_flood(self, message: str) -> Tuple[bool, str]:
-        """Проверка на флуд"""
-        for pattern in self.flood_patterns:
-            match = re.search(pattern, message)
-            if match:
-                return True, f"Обнаружен флуд: '{match.group()}'"
+    # Определяем финальный вердикт
+    if violations:
+        verdict = "банить"
+        confidence_percent = int(max_confidence * 100)
+        combined_reason = f"Вердикт: {verdict}\nПричина: {main_reason}\nУверенность: {confidence_percent}%"
         
-        # Проверка на очень короткие повторяющиеся сообщения
-        if len(message) < 3:
-            return True, "Слишком короткое сообщение (возможный флуд)"
+        return {
+            "ban": True,
+            "reason": combined_reason,
+            "confidence": max_confidence,
+            "method": "эвристический анализ",
+            "violations_count": len(violations),
+            "all_violations": violations
+        }
+    else:
+        return {
+            "ban": False,
+            "reason": "Вердикт: не банить\nПричина: Нарушений не обнаружено\nУверенность: 80%",
+            "confidence": 0.8,
+            "method": "эвристический анализ",
+            "violations_count": 0,
+            "all_violations": []
+        }
+
+# ============================================================================
+# OPENAI РЕЗЕРВНЫЙ АНАЛИЗ (с новым промптом v2.0)
+# ============================================================================
+def openai_fallback_analysis(message: str, rules: List[str]) -> dict:
+    """
+    Резервный анализ через OpenAI с обновленным промптом v2.0
+    """
+    try:
+        # Если правил нет, используем стандартные
+        if not rules:
+            rules = DEFAULT_RULES
         
-        return False, ""
-    
-    def analyze(self, message: str, rules: List[str]) -> Dict[str, Any]:
-        """
-        Основной метод анализа сообщения.
-        """
-        if not message or not message.strip():
-            return {
-                "ban": False,
-                "reason": "Пустое сообщение - нет оснований для бана"
-            }
+        rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
         
-        violations = []
+        system_msg = f"""Ты — модератор группового чата. Твоя задача — получать сообщения из чата и анализировать их с точки зрения соответствия правилам. По каждому сообщению выноси вердикт: «банить» или «не банить», указывая причину решения и степень уверенности в процентах.
+
+ПРАВИЛА ЧАТА:
+{rules_text}
+
+Формат вывода:
+Вердикт: <банить/не банить>
+Причина: <текст причины>
+Уверенность: <число от 0 до 100>%
+
+ИНСТРУКЦИИ:
+1. Анализируй сообщение строго по указанным правилам
+2. Будь объективным в оценке
+3. Указывай конкретную причину решения
+4. Уверенность должна отражать степень нарушения (0-100%)
+
+Это резервный анализ после эвристической проверки."""
         
-        # Проверяем все типы нарушений способом, который НАХОДИТ все нарушения тестов
-        checks = [
-            ("спам/реклама", self.check_spam),
-            ("оскорбления", self.check_insults),
-            ("нецензурная лексика", self.check_profanity),
-            ("дискриминация", self.check_discrimination),
-            ("флуд", self.check_flood)
-        ]
+        user_msg = f"Сообщение пользователя:\n\"{message}\""
         
-        for check_name, check_func in checks:
-            is_violation, reason = check_func(message)
-            if is_violation:
-                violations.append(f"[{check_name.upper()}] {reason}")
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg}
+            ],
+            temperature=0.1,
+            max_tokens=300
+        )
         
-        if violations:
-            return {
-                "ban": True,
-                "reason": f"Вердикт: да. Обнаружены нарушения: {' | '.join(violations)}"
-            }
-        else:
-            return {
-                "ban": False,
-                "reason": "Вердикт: нет. Нарушений не обнаружено. Сообщение соответствует правилам чата."
-            }
+        content = response.choices[0].message.content
+        
+        # Парсим ответ в новом формате
+        content_lower = content.lower()
+        
+        # Ищем вердикт
+        ban = False
+        if "вердикт:" in content_lower:
+            verdict_line = [line for line in content.split('\n') if 'вердикт:' in line.lower()]
+            if verdict_line:
+                verdict_text = verdict_line[0].lower()
+                if "банить" in verdict_text and "не банить" not in verdict_text:
+                    ban = True
+        
+        # Ищем уверенность
+        confidence = 0.6  # По умолчанию
+        if "уверенность:" in content_lower:
+            confidence_line = [line for line in content.split('\n') if 'уверенность:' in line.lower()]
+            if confidence_line:
+                try:
+                    import re
+                    numbers = re.findall(r'\d+', confidence_line[0])
+                    if numbers:
+                        confidence = int(numbers[0]) / 100.0
+                        confidence = min(1.0, max(0.0, confidence))
+                except:
+                    confidence = 0.6
+        
+        return {
+            "ban": ban,
+            "reason": content,
+            "confidence": confidence,
+            "method": "OpenAI резервный анализ",
+            "ai_response": True
+        }
+        
+    except Exception as e:
+        logger.error(f"Ошибка OpenAI резервного анализа: {e}")
+        return {
+            "ban": False,
+            "reason": f"Вердикт: не банить\nПричина: Ошибка ИИ анализа: {e}\nУверенность: 0%",
+            "confidence": 0.0,
+            "method": "ошибка OpenAI",
+            "ai_response": False
+        }
 
 # ============================================================================
 # ОСНОВНАЯ ЛОГИКА АГЕНТА 4
 # ============================================================================
-def moderation_agent_4(input_data, db_session):
+def moderation_agent_4(input_data):
     """
-    АГЕНТ 4 — Эвристический модератор.
-    Использует правила и паттерны для анализа без ИИ.
+    АГЕНТ 4 — Эвристический модератор + OpenAI резерв (v2.0).
+    Сначала применяет эвристические правила, при неуверенности — OpenAI.
     """
     message = input_data.get("message", "")
     rules = input_data.get("rules", [])
@@ -280,13 +327,14 @@ def moderation_agent_4(input_data, db_session):
     message_id = input_data.get("message_id")
     message_link = input_data.get("message_link", "")
     
-    logger.info(f"Анализирую сообщение от @{username} в чате {chat_id} (эвристический анализ)")
+    logger.info(f"Анализирую сообщение от @{username} в чате {chat_id}")
     
     if not message:
         return {
             "agent_id": 4,
             "ban": False,
-            "reason": "Ошибка: пустое сообщение",
+            "reason": "Вердикт: не банить\nПричина: Пустое сообщение\nУверенность: 0%",
+            "confidence": 0,
             "message": "",
             "user_id": user_id,
             "username": username,
@@ -295,108 +343,85 @@ def moderation_agent_4(input_data, db_session):
             "status": "error"
         }
     
-    # Эвристический анализ
-    analyzer = HeuristicAnalyzer()
-    result = analyzer.analyze(message, rules)
+    # Если правил нет, используем стандартные
+    if not rules:
+        rules = DEFAULT_RULES
+        logger.info("Используются стандартные правила v2.0")
+    
+    # Сначала эвристический анализ
+    heuristic_result = heuristic_analysis(message, rules)
+    
+    # Определяем, нужен ли OpenAI резерв
+    use_openai_fallback = False
+    
+    if heuristic_result["confidence"] < 0.7:  # Низкая уверенность
+        use_openai_fallback = True
+        logger.info(f"Низкая уверенность эвристики ({heuristic_result['confidence']:.2f}), используем OpenAI резерв")
+    elif not heuristic_result["ban"] and any(keyword in message.lower() for keyword in ['сложный', 'неоднозначный', 'спорный']):
+        use_openai_fallback = True
+        logger.info("Потенциально сложное сообщение, используем OpenAI резерв")
+    
+    # Применяем OpenAI резерв если нужно
+    if use_openai_fallback:
+        openai_result = openai_fallback_analysis(message, rules)
+        
+        # Комбинируем результаты (приоритет у OpenAI при конфликте)
+        if openai_result["confidence"] > heuristic_result["confidence"]:
+            final_result = openai_result
+            final_result["method"] = f"OpenAI резерв (эвристика: {heuristic_result['confidence']:.2f})"
+            logger.info(f"Использован OpenAI резерв (уверенность: {openai_result['confidence']:.2f})")
+        else:
+            final_result = heuristic_result
+            final_result["fallback_attempted"] = True
+            logger.info(f"Остался с эвристикой (OpenAI: {openai_result['confidence']:.2f})")
+    else:
+        final_result = heuristic_result
+        final_result["fallback_attempted"] = False
+        logger.info(f"Использована только эвристика (уверенность: {heuristic_result['confidence']:.2f})")
     
     output = {
         "agent_id": 4,
-        "ban": result["ban"],
-        "reason": result["reason"],
+        "ban": final_result["ban"],
+        "reason": final_result["reason"],
+        "confidence": final_result["confidence"],
         "message": message,
         "user_id": user_id,
         "username": username,
         "chat_id": chat_id,
         "message_id": message_id,
         "message_link": message_link,
+        "method": final_result["method"],
+        "rules_used": rules,
         "status": "success",
-        "confidence": 0.75 if result["ban"] else 0.8,  # Эвристика менее уверена чем ИИ
         "timestamp": datetime.now().isoformat()
     }
     
-    # Сохраняем в БД (аналогично Агенту 3)
-    try:
-        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
-        if not chat:
-            chat = Chat(tg_chat_id=str(chat_id))
-            db_session.add(chat)
-            db_session.commit()
-        
-        # Проверяем существующее сообщение
-        existing_message = db_session.query(Message).filter_by(
-            chat_id=chat.id, 
-            message_id=message_id
-        ).first()
-        
-        if existing_message:
-            # Обновляем AI response
-            existing_response = existing_message.ai_response or ""
-            existing_message.ai_response = f"{existing_response}\n[АГЕНТ 4] {result['reason']}"
-            existing_message.processed_at = datetime.utcnow()
-        else:
-            # Создаем новое сообщение
-            message_obj = Message(
-                chat_id=chat.id,
-                message_id=message_id,
-                sender_username=username,
-                sender_id=user_id,
-                message_text=message,
-                message_link=message_link,
-                ai_response=result["reason"],
-                processed_at=datetime.utcnow()
-            )
-            db_session.add(message_obj)
-        
-        db_session.commit()
-        
-        # Если обнаружено нарушение — сохраняем в negative_messages
-        if result["ban"]:
-            negative_msg = NegativeMessage(
-                chat_id=chat.id,
-                message_link=message_link,
-                sender_username=username,
-                sender_id=user_id,
-                negative_reason=result["reason"],
-                agent_id=4,
-                is_sent_to_moderators=False
-            )
-            db_session.add(negative_msg)
-            db_session.commit()
-            logger.warning(f"БАН ⛔ для @{username}: {result['reason'][:50]}...")
-        else:
-            logger.info(f"ОК ✅ для @{username}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении в БД: {e}")
-        output["db_error"] = str(e)
+    if final_result["ban"]:
+        logger.warning(f"БАН ⛔ для @{username}: {final_result['confidence']*100:.0f}% уверенности ({final_result['method']})")
+    else:
+        logger.info(f"ОК ✅ для @{username}: {final_result['confidence']*100:.0f}% уверенности ({final_result['method']})")
     
     return output
 
 # ============================================================================
-# РАБОТА С REDIS
+# РАБОТА С REDIS И ВЗАИМОДЕЙСТВИЕ МЕЖДУ АГЕНТАМИ
 # ============================================================================
 class Agent4Worker:
     def __init__(self):
         try:
-            redis_config = {
-                "host": REDIS_HOST,
-                "port": REDIS_PORT,
-                "db": REDIS_DB,
-                "password": REDIS_PASSWORD,
-                "decode_responses": True
-            }
+            redis_config = get_redis_config()
             self.redis_client = redis.Redis(**redis_config)
             self.redis_client.ping()
-            logger.info(f"✅ Подключение к Redis успешно: {REDIS_HOST}:{REDIS_PORT}")
+            logger.info(f"✅ Подключение к Redis успешно")
         except Exception as e:
             logger.error(f"❌ Не удалось подключиться к Redis: {e}")
             raise
     
-    def process_message(self, message_data, db_session):
+    def process_message(self, message_data):
         """Обрабатывает сообщение от входной очереди"""
         try:
             input_data = json.loads(message_data)
-            result = moderation_agent_4(input_data, db_session)
+            result = moderation_agent_4(input_data)
             return result
         except json.JSONDecodeError as e:
             logger.error(f"Невалидный JSON: {e}")
@@ -404,6 +429,7 @@ class Agent4Worker:
                 "agent_id": 4,
                 "ban": False,
                 "reason": f"Ошибка парсинга данных: {e}",
+                "confidence": 0,
                 "message": "",
                 "status": "json_error"
             }
@@ -413,6 +439,7 @@ class Agent4Worker:
                 "agent_id": 4,
                 "ban": False,
                 "reason": f"Внутренняя ошибка агента 4: {e}",
+                "confidence": 0,
                 "message": "",
                 "status": "error"
             }
@@ -424,24 +451,23 @@ class Agent4Worker:
             # Отправляем результат в очередь Агента 4
             self.redis_client.rpush(QUEUE_AGENT_4_OUTPUT, result_json)
             
-            # Если обнаружено нарушение, отправляем также в очередь Агента 5
-            if result.get("ban"):
-                self.redis_client.rpush(QUEUE_AGENT_5_INPUT, result_json)
-                logger.info(f"✅ Результат отправлен Агенту 5")
+            # Отправляем результат в очередь Агента 5
+            self.redis_client.rpush(QUEUE_AGENT_5_INPUT, result_json)
             
-            logger.info(f"✅ Результат отправлен в очередь")
+            logger.info(f"✅ Результат отправлен в очереди")
             
         except Exception as e:
             logger.error(f"Не удалось отправить результат: {e}")
     
     def run(self):
         """Главный цикл обработки сообщений"""
-        logger.info(f"✅ Запущен. Ожидаю сообщения из: {QUEUE_AGENT_4_INPUT}")
+        logger.info(f"✅ Агент 4 запущен (Эвристика + OpenAI резерв v4.3 с .env)")
+        logger.info(f"   Слушаю очередь: {QUEUE_AGENT_4_INPUT}")
         logger.info(f"   Отправляю результаты в: {QUEUE_AGENT_4_OUTPUT}")
         logger.info(f"   Отправляю в Агента 5: {QUEUE_AGENT_5_INPUT}")
+        logger.info(f"   Стандартные правила v2.0: {DEFAULT_RULES}")
         logger.info("   Нажмите Ctrl+C для остановки\n")
         
-        db_session = None
         try:
             while True:
                 try:
@@ -452,25 +478,18 @@ class Agent4Worker:
                     queue_name, message_data = result
                     logger.info(f"📨 Получено сообщение")
                     
-                    # Создаем новую сессию БД для каждого сообщения
-                    db_session = get_db_session()
-                    output = self.process_message(message_data, db_session)
+                    output = self.process_message(message_data)
                     self.send_result(output)
-                    db_session.close()
                     
                     logger.info(f"✅ Обработка завершена\n")
                     
                 except Exception as e:
                     logger.error(f"Ошибка в цикле: {e}")
-                    if db_session:
-                        db_session.close()
                     time.sleep(1)
                     
         except KeyboardInterrupt:
             logger.info("\n❌ Агент 4 остановлен (Ctrl+C)")
         finally:
-            if db_session:
-                db_session.close()
             logger.info("Агент 4 завершил работу")
 
 # ============================================================================
@@ -490,8 +509,18 @@ def create_health_check_server():
                 health_info = {
                     "status": "online",
                     "agent_id": 4,
-                    "name": "Агент №4 (Эвристический)",
-                    "version": "4.0",
+                    "name": "Агент №4 (Эвристика + OpenAI)",
+                    "version": "4.3 (.env)",
+                    "ai_provider": "Эвристика + OpenAI API резерв",
+                    "prompt_version": "v2.0 - новый формат",
+                    "configuration": "Environment variables (.env)",
+                    "default_rules": DEFAULT_RULES,
+                    "heuristic_patterns": {
+                        "profanity": len(PROFANITY_PATTERNS),
+                        "spam": len(SPAM_PATTERNS),
+                        "discrimination": len(DISCRIMINATION_PATTERNS),
+                        "flood": len(FLOOD_PATTERNS)
+                    },
                     "timestamp": datetime.now().isoformat(),
                     "redis_queue": QUEUE_AGENT_4_INPUT,
                     "uptime_seconds": int(time.time())
@@ -505,10 +534,10 @@ def create_health_check_server():
             # Подавляем логирование HTTP запросов
             pass
     
-    server = HTTPServer(('localhost', 8004), HealthCheckHandler)
+    server = HTTPServer(('localhost', AGENT_PORTS[4]), HealthCheckHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    logger.info("✅ Health check сервер запущен на порту 8004")
+    logger.info(f"✅ Health check сервер запущен на порту {AGENT_PORTS[4]}")
 
 # ============================================================================
 # ТОЧКА ВХОДА
@@ -519,26 +548,50 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         mode = sys.argv[1]
         if mode == "test":
-            # Тестирование
-            test_input = {
-                "message": "Идиот, сука, хуй тебе в жопу!",
-                "rules": [
-                    "Запрещена реклама",
-                    "Запрещены нецензурные выражения",
-                    "Запрещены оскорбления",
-                    "Запрещена дискриминация"
-                ],
-                "user_id": 456,
-                "username": "toxic_user",
-                "chat_id": -200,
-                "message_id": 2,
-                "message_link": "https://t.me/test/2"
-            }
+            # Тестирование с новым форматом v2.0
+            test_cases = [
+                {
+                    "message": "Привет всем! Как дела?",
+                    "rules": [],
+                    "description": "Нормальное сообщение"
+                },
+                {
+                    "message": "Ты дурак и идиот! Хуй тебе!",
+                    "rules": DEFAULT_RULES,
+                    "description": "Мат и оскорбления"
+                },
+                {
+                    "message": "Переходи по ссылке t.me/spam_channel! Заработок от 100$ в день!",
+                    "rules": DEFAULT_RULES,
+                    "description": "Спам с ссылкой"
+                },
+                {
+                    "message": "Все эти негры должны убираться отсюда!",
+                    "rules": DEFAULT_RULES,
+                    "description": "Расовая дискриминация"
+                }
+            ]
             
-            db_session = get_db_session()
-            result = moderation_agent_4(test_input, db_session)
-            db_session.close()
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+            for i, test_case in enumerate(test_cases, 1):
+                print(f"\n--- Тест {i}: {test_case['description']} ---")
+                
+                test_input = {
+                    "message": test_case["message"],
+                    "rules": test_case["rules"],
+                    "user_id": 123 + i,
+                    "username": f"test_user_{i}",
+                    "chat_id": -100,
+                    "message_id": i,
+                    "message_link": f"https://t.me/test/{i}"
+                }
+                
+                result = moderation_agent_4(test_input)
+                
+                print(f"Вердикт: {'БАН' if result['ban'] else 'ОК'}")
+                print(f"Уверенность: {result['confidence']*100:.0f}%")
+                print(f"Метод: {result.get('method', 'N/A')}")
+                print(f"Причина: {result['reason']}")
+                
     else:
         # Запуск основного цикла обработки
         try:

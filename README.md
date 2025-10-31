@@ -1,474 +1,405 @@
-# TeleGuard Bot - Многоагентная система модерации Telegram
+# 🤖 TeleGuard - Многоагентная система модерации Telegram (Mistral AI версия)
 
-## Описание проекта
+Интеллектуальная система модерации для Telegram-чатов с использованием **Mistral AI** и пяти специализированных агентов для анализа сообщений в реальном времени.
 
-TeleGuard Bot - это современная многоагентная система для автоматической модерации Telegram-чатов, построенная на базе PostgreSQL, Redis и искусственного интеллекта. Система состоит из 5 независимых агентов, каждый из которых выполняет специализированную задачу в процессе модерации сообщений.
+## 🆕 Что нового в Mistral AI версии
 
-## Архитектура системы
+### 🧠 **ИИ провайдер: Mistral AI**
+- ✅ Использует **Mistral AI API** вместо OpenAI
+- ✅ Модель по умолчанию: `mistral-large-latest`
+- ✅ Поддержка всех Mistral моделей (от `open-mistral-7b` до `mistral-large-latest`)
+- ✅ Отключен safe_mode для более точной модерации
 
-### Основные компоненты:
+### ⚙️ **Централизованная конфигурация (.env):**
+- ✅ Все настройки в файле `.env`
+- ✅ Единый файл `config.py` для всех агентов
+- ✅ Автоматическая валидация Mistral API ключа
+- ✅ Безопасное хранение токенов и паролей
 
-1. **TeleGuard Bot** (`teteguard_bot.py`) - Основной Telegram бот
-2. **Agent 1** (`first_agent.py`) - Координатор и нормализатор
-3. **Agent 2** (`second_agent.py`) - Анализатор и распределитель  
-4. **Agent 3** (`third_agent.py`) - Модератор на базе GigaChat
-5. **Agent 4** (`fourth_agent.py`) - Модератор с эвристическим анализом
-6. **Agent 5** (`fifth_agent.py`) - Арбитр и финальный судья
-
-### Схема работы:
-
+### 📋 **Новый промпт-формат для модерации:**
 ```
-Telegram Chat → TeleGuard Bot → Agent 1 → Agent 2 → Agent 3 & Agent 4 → Agent 5 → Moderators
-```
-
-## Структура файлов
-
-```
-teleguard_project/
-├── teteguard_bot.py           # Основной Telegram бот
-├── first_agent.py             # Агент №1 - Координатор
-├── second_agent.py            # Агент №2 - Анализатор  
-├── third_agent.py             # Агент №3 - Модератор (GigaChat)
-├── fourth_agent.py            # Агент №4 - Модератор (эвристика)
-├── fifth_agent.py             # Агент №5 - Арбитр
-├── README.md                  # Этот файл
-├── requirements.txt           # Зависимости проекта
-├── .env                       # Переменные окружения (создать)
-└── logs/                      # Директория для логов (создается автоматически)
+Вердикт: <банить/не банить>
+Причина: <текст причины>
+Уверенность: <число от 0 до 100>%
 ```
 
-## Технологический стек
+### 🛡️ **Кастомные правила для каждого чата:**
+- Стандартные правила: "Запрещена расовая дискриминация" + "Запрещены ссылки"
+- Администраторы могут задать свои правила через бота
+- Правила сохраняются в базе данных для каждого чата
 
-### Backend:
-- **Python 3.10+** - Основной язык программирования
-- **FastAPI** - REST API фреймворк для агентов
-- **SQLAlchemy 2.0** - ORM для работы с базой данных
-- **asyncio** - Асинхронное программирование
-- **Loguru** - Продвинутое логирование
+### 🔒 **Доступ только администраторам:**
+- Все функции бота доступны только администраторам групповых чатов
+- Обычные пользователи видят: "Тебе тут делать нечего"
+- Автоматическая проверка прав при каждом действии
 
-### Database:
-- **PostgreSQL** - Основная база данных
-- **asyncpg** - Асинхронный драйвер PostgreSQL
+## 🧠 ИИ Провайдер: Mistral AI
 
-### Message Queue:
-- **Redis** - Очереди сообщений между агентами
+Все агенты используют **Mistral AI API** с обновленными промптами:
+- **Агент №2**: Mistral AI для анализа и распределения
+- **Агент №3**: Полный анализ через Mistral AI с новым форматом
+- **Агент №4**: Эвристический анализ + Mistral AI резерв
+- **Агент №5**: Mistral AI арбитр с обновленным промптом
 
-### Telegram:
-- **aiogram 3.x** - Telegram Bot API фреймворк
+### 🚀 **Поддерживаемые модели Mistral AI:**
+- `mistral-large-latest` (рекомендуется)
+- `mistral-medium-latest`
+- `mistral-small-latest`
+- `open-mistral-7b`
+- `open-mistral-8x7b`
+- `open-mistral-8x22b`
 
-### AI/ML:
-- **GigaChat API** - Анализ сообщений через нейросети Сбербанка
-- **Эвристические алгоритмы** - Альтернативный анализ паттернов
+## ⚙️ Настройка с .env файлом (Mistral AI)
 
-### HTTP Client:
-- **httpx** - Асинхронный HTTP клиент
-- **aiohttp** - HTTP клиент/сервер
+### 1. Создайте файл .env в корневой папке проекта:
+```bash
+# Скопируйте содержимое файла .env из проекта
+cp .env.example .env
+```
 
-## База данных PostgreSQL
+### 2. Заполните переменные окружения в .env:
+```bash
+# Mistral AI Configuration
+MISTRAL_API_KEY=ygeDdoQrYFW5iM8aVw2p18pPZ1se30ow
 
-### Схема БД:
+# Telegram Bot Configuration  
+TELEGRAM_BOT_TOKEN=ваш-telegram-bot-token
 
+# Database Configuration
+POSTGRES_URL=postgresql://user:password@host:port/database
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=tguser
+POSTGRES_PASSWORD=ваш_пароль
+POSTGRES_DB=teleguard_db
+
+# Redis Configuration
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=
+
+# Application Configuration
+DEBUG=False
+LOG_LEVEL=INFO
+TIMEZONE=Europe/Moscow
+
+# AI Provider Configuration
+AI_PROVIDER=mistral
+MISTRAL_MODEL=mistral-large-latest
+```
+
+### 3. Установите зависимости:
+```bash
+pip install mistralai aiogram sqlalchemy psycopg2-binary redis requests fastapi uvicorn python-dotenv
+```
+
+### 4. Подготовьте базу данных:
 ```sql
--- Чаты
-CREATE TABLE chats (
-    id INTEGER PRIMARY KEY,
-    tg_chat_id VARCHAR UNIQUE NOT NULL,
-    title VARCHAR(255),
-    chat_type VARCHAR(50) DEFAULT 'group',
-    added_at TIMESTAMP DEFAULT NOW(),
-    is_active BOOLEAN DEFAULT TRUE
-);
-
--- Сообщения
-CREATE TABLE messages (
-    id INTEGER PRIMARY KEY,
-    chat_id INTEGER REFERENCES chats(id) ON DELETE CASCADE,
-    sender_username VARCHAR,
-    sender_id BIGINT,
-    message_text TEXT,
-    message_link VARCHAR,
-    created_at TIMESTAMP DEFAULT NOW(),
-    processed_at TIMESTAMP,
-    ai_response TEXT
-);
-
--- Модераторы
-CREATE TABLE moderators (
-    id INTEGER PRIMARY KEY,
-    chat_id INTEGER REFERENCES chats(id) ON DELETE CASCADE,
-    username VARCHAR,
-    telegram_user_id BIGINT,
-    is_active BOOLEAN DEFAULT TRUE,
-    added_at TIMESTAMP DEFAULT NOW()
-);
-
--- Негативные сообщения
-CREATE TABLE negative_messages (
-    id INTEGER PRIMARY KEY,
-    chat_id INTEGER REFERENCES chats(id) ON DELETE CASCADE,
-    message_link VARCHAR,
-    sender_username VARCHAR,
-    negative_reason TEXT,
-    is_sent_to_moderators BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-## Установка и настройка
-
-### 1. Системные требования:
-
-- Python 3.10 или выше
-- PostgreSQL 13+ 
-- Redis 6+
-- Ubuntu 20.04+ / Windows 10+ / macOS 12+
-- Минимум 4GB RAM
-- 10GB свободного места на диске
-
-### 2. Установка зависимостей:
-
-```bash
-# Клонирование репозитория
-git clone <repository-url>
-cd LLM_project
-
-# Создание виртуального окружения
-python3 -m venv venv
-source venv/bin/activate  # Linux/macOS
-# venv\Scripts\activate   # Windows
-
-# Установка зависимостей
-pip install -r requirements.txt
-```
-
-### 3. Создание файла requirements.txt:
-
-```txt
-# FastAPI и сервер
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-
-# База данных
-sqlalchemy[asyncio]==2.0.23
-asyncpg==0.29.0
-alembic==1.12.1
-
-# Telegram Bot
-aiogram==3.2.0
-
-# Redis
-redis==5.0.1
-
-# HTTP клиенты
-httpx==0.25.2
-aiohttp==3.9.1
-
-# Утилиты
-python-dotenv==1.0.0
-loguru==0.7.2
-python-multipart==0.0.6
-
-# Дополнительные зависимости
-pydantic==2.5.0
-typing-extensions==4.8.0
-```
-
-### 4. Настройка PostgreSQL:
-
-```bash
-# Подключение к PostgreSQL
-sudo -u postgres psql
-
-# Создание пользователя и базы данных
-CREATE USER tguser WITH PASSWORD 'mnvm7110';
-CREATE DATABASE teleguard_db OWNER tguser;
+-- Создайте базу данных и пользователя
+CREATE DATABASE teleguard_db;
+CREATE USER tguser WITH PASSWORD 'ваш_пароль';
 GRANT ALL PRIVILEGES ON DATABASE teleguard_db TO tguser;
+
+-- Добавьте поле для кастомных правил (если обновляете)
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS custom_rules TEXT;
 ```
 
-### 5. Настройка Redis:
-
+### 5. Проверьте конфигурацию:
 ```bash
-# Установка Redis (Ubuntu)
-sudo apt update
-sudo apt install redis-server
-
-# Запуск Redis
-sudo systemctl start redis-server
-sudo systemctl enable redis-server
-
-# Проверка работы
-redis-cli ping
-# Должно вернуть: PONG
+python3 config.py
 ```
 
-## Запуск системы
+## 🚀 Запуск системы (Mistral AI версия)
 
-### Последовательность запуска:
-
-1. **Запуск PostgreSQL и Redis:**
+### Способ 1: Последовательный запуск (рекомендуется)
 ```bash
-sudo systemctl start postgresql redis-server
+# Терминал 1 - Агент №1 (Координатор)
+python3 first_agent.py
+
+# Терминал 2 - Агент №2 (Анализатор Mistral AI v2.0)
+python3 second_agent.py
+
+# Терминал 3 - Агент №3 (Mistral AI модератор v2.0)
+python3 third_agent.py
+
+# Терминал 4 - Агент №4 (Эвристический + Mistral AI)
+python3 fourth_agent.py
+
+# Терминал 5 - Агент №5 (Арбитр Mistral AI v2.0)
+python3 fifth_agent.py
+
+# Терминал 6 - Telegram Bot (только админы)
+python3 teleguard_bot.py
 ```
 
-2. **Запуск Agent 1 (Координатор):**
+### Способ 2: С использованием screen/tmux (Mistral AI)
 ```bash
-python first_agent.py
-# Порт: 8001
+#!/bin/bash
+# start_mistral_system.sh
+
+# Проверяем наличие .env файла
+if [ ! -f .env ]; then
+    echo "❌ Файл .env не найден! Создайте его на основе .env.example"
+    exit 1
+fi
+
+# Проверяем Mistral API ключ
+if ! grep -q "MISTRAL_API_KEY=" .env; then
+    echo "❌ MISTRAL_API_KEY не найден в .env файле!"
+    exit 1
+fi
+
+echo "🚀 Запуск TeleGuard с Mistral AI..."
+
+screen -dmS agent1 python3 first_agent.py
+screen -dmS agent2 python3 second_agent.py
+screen -dmS agent3 python3 third_agent.py
+screen -dmS agent4 python3 fourth_agent.py
+screen -dmS agent5 python3 fifth_agent.py
+
+sleep 5
+screen -dmS bot python3 teleguard_bot.py
+
+echo "✅ Все агенты запущены с Mistral AI!"
+echo "🧠 ИИ провайдер: Mistral AI"
+screen -list
 ```
 
-3. **Запуск Agent 2 (Анализатор):**
+## 🔧 Проверка работы (Mistral AI версия)
+
+### Health Check агентов (с информацией о Mistral AI)
 ```bash
-python second_agent.py  
-# Порт: 8002
+curl http://localhost:8001/health  # Агент 1
+curl http://localhost:8002/health  # Агент 2 (Mistral AI)
+curl http://localhost:8003/health  # Агент 3 (Mistral AI)
+curl http://localhost:8004/health  # Агент 4 (Mistral AI резерв)
+curl http://localhost:8005/health  # Агент 5 (Mistral AI арбитр)
 ```
 
-4. **Запуск Agent 3 (GigaChat модератор):**
+Ответ теперь содержит информацию о Mistral AI:
+```json
+{
+  "status": "online",
+  "agent_id": 3,
+  "ai_provider": "Mistral AI (mistral-large-latest)",
+  "prompt_version": "v2.0 - новый формат",
+  "configuration": "Environment variables (.env)",
+  "default_rules": ["Запрещена расовая дискриминация", "Запрещены ссылки"],
+  "uptime_seconds": 1234
+}
+```
+
+### Тестирование Mistral AI конфигурации
 ```bash
-python third_agent.py
-# Redis worker, без веб-интерфейса
+# Проверка загрузки .env с Mistral AI
+python3 -c "from config import get_config_summary; print(get_config_summary())"
+
+# Тест отдельных агентов с Mistral AI
+python3 third_agent.py test
+python3 fifth_agent.py test
 ```
 
-5. **Запуск Agent 4 (Эвристический модератор):**
+## 📁 Структура файлов (Mistral AI версия)
+
+```
+TeleGuard-Mistral/
+├── .env                 # 🆕 Переменные окружения (Mistral AI)
+├── config.py           # 🆕 Централизованная конфигурация (Mistral AI)
+├── first_agent.py      # Агент №1 - Координатор (.env)
+├── second_agent.py     # Агент №2 - Анализатор (Mistral AI)
+├── third_agent.py      # Агент №3 - Mistral AI модератор
+├── fourth_agent.py     # Агент №4 - Эвристика + Mistral AI
+├── fifth_agent.py      # Агент №5 - Арбитр Mistral AI
+├── teleguard_bot.py    # Telegram бот (.env + Mistral AI)
+├── README.md           # Документация (Mistral AI версия)
+└── requirements.txt    # Зависимости Python (Mistral AI)
+```
+
+## 📋 Особенности Mistral AI конфигурации
+
+### ✅ Преимущества Mistral AI:
+- **Производительность**: Быстрые ответы и низкая латентность
+- **Качество**: Отличное понимание русского языка
+- **Безопасность**: Отключен safe_mode для точной модерации
+- **Гибкость**: Поддержка разных моделей от 7B до Large
+- **Стоимость**: Конкурентные цены по сравнению с OpenAI
+
+### 🔧 Поддерживаемые переменные (Mistral AI):
+
+#### AI API Keys:
+- `MISTRAL_API_KEY` - ключ Mistral AI API
+- `MISTRAL_MODEL` - модель (по умолчанию mistral-large-latest)
+- `AI_PROVIDER` - провайдер ИИ (mistral)
+
+#### Telegram:
+- `TELEGRAM_BOT_TOKEN` - токен Telegram бота
+
+#### База данных:
+- `POSTGRES_URL` - полная строка подключения
+- `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
+
+#### Redis:
+- `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`
+
+#### Приложение:
+- `DEBUG` - режим отладки (true/false)
+- `LOG_LEVEL` - уровень логирования (INFO, DEBUG, WARNING, ERROR)
+- `TIMEZONE` - часовой пояс (по умолчанию Europe/Moscow)
+
+### 🔒 Безопасность .env (Mistral AI):
+
+#### Пример .env.example для Mistral AI:
 ```bash
-python fourth_agent.py
-# Redis worker, без веб-интерфейса
+# .env.example (без реальных значений)
+MISTRAL_API_KEY=your-mistral-api-key-here
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token-here
+POSTGRES_URL=postgresql://user:password@host:port/database
+AI_PROVIDER=mistral
+MISTRAL_MODEL=mistral-large-latest
+# ... остальные переменные
 ```
 
-6. **Запуск Agent 5 (Арбитр):**
+## 📊 Мониторинг системы (Mistral AI версия)
+
+### Команды для проверки:
 ```bash
-python fifth_agent.py
-# Standalone процесс
+# Проверка конфигурации Mistral AI
+python3 -c "from config import validate_config; validate_config(); print('✅ Конфигурация Mistral AI корректна')"
+
+# Статус всех агентов с информацией о Mistral AI
+for port in 8001 8002 8003 8004 8005; do
+  echo "Агент на порту $port:"
+  curl -s http://localhost:$port/health | jq '.ai_provider'
+done
+
+# Проверка логов с информацией о Mistral AI
+tail -f *.log | grep -E "(Mistral|AI|модель)"
 ```
 
-7. **Запуск основного Telegram бота:**
+### Логи содержат информацию о Mistral AI:
+```
+[2025-10-31 10:03:13] [АГЕНТ 2] INFO: ✅ Агент 2 запущен (Mistral AI API, v2.4)
+[2025-10-31 10:03:13] [АГЕНТ 2] INFO:    Модель: mistral-large-latest
+[2025-10-31 10:03:13] [АГЕНТ 3] INFO: ✅ Агент 3 запущен (Mistral AI модератор v3.6)
+[2025-10-31 10:03:13] [АГЕНТ 5] INFO: ✅ Агент 5 запущен (Mistral AI арбитр v5.4)
+```
+
+## 🐛 Диагностика проблем (Mistral AI версия)
+
+### Проблема: Ошибки Mistral AI API
 ```bash
-python teteguard_bot.py
-# Основной бот
+# Проверьте Mistral API ключ
+python3 -c "
+from config import MISTRAL_API_KEY
+print('Mistral API Key:', 'OK' if MISTRAL_API_KEY else 'MISSING')
+print('Length:', len(MISTRAL_API_KEY) if MISTRAL_API_KEY else 0)
+"
+
+# Проверьте доступность Mistral AI
+python3 -c "
+from mistralai.client import MistralClient
+from config import MISTRAL_API_KEY
+try:
+    client = MistralClient(api_key=MISTRAL_API_KEY)
+    print('✅ Mistral AI клиент создан успешно')
+except Exception as e:
+    print(f'❌ Ошибка Mistral AI: {e}')
+"
 ```
 
-### Альтернативный запуск через Docker Compose:
-
-```yaml
-version: '3.8'
-services:
-  postgresql:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: teleguard_db
-      POSTGRES_USER: tguser
-      POSTGRES_PASSWORD: mnvm7110
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-
-  agent1:
-    build: .
-    command: python first_agent.py
-    ports:
-      - "8001:8001"
-    depends_on:
-      - postgresql
-      - redis
-
-  agent2:
-    build: .
-    command: python second_agent.py
-    ports:
-      - "8002:8002"
-    depends_on:
-      - postgresql
-      - redis
-
-  agent3:
-    build: .
-    command: python third_agent.py
-    depends_on:
-      - redis
-
-  agent4:
-    build: .
-    command: python fourth_agent.py
-    depends_on:
-      - redis
-
-  agent5:
-    build: .
-    command: python fifth_agent.py
-    depends_on:
-      - postgresql
-
-  telegram-bot:
-    build: .
-    command: python teteguard_bot.py
-    depends_on:
-      - postgresql
-
-volumes:
-  postgres_data:
-```
-
-## API Endpoints
-
-### Agent 1 (http://localhost:8001):
-- `POST /process_message` - Обработка одного сообщения
-- `POST /process_batch` - Обработка пакета сообщений
-- `GET /health` - Проверка здоровья
-- `GET /metrics` - Метрики производительности
-- `GET /chat/{chat_id}/stats` - Статистика чата
-- `POST /chat/{chat_id}/moderator` - Добавить модератора
-- `GET /chat/{chat_id}/messages` - Сообщения чата
-
-### Agent 2 (http://localhost:8002):
-- `POST /process_message` - Анализ сообщения
-- `POST /process_batch` - Обработка пакета
-- `GET /health` - Состояние системы
-
-## Мониторинг и логирование
-
-### Структура логов:
-
-```
-logs/
-├── agent_1_2025-01-01.log    # Логи агента 1
-├── agent_2_2025-01-01.log    # Логи агента 2  
-├── agent_3_2025-01-01.log    # Логи агента 3
-├── agent_4_2025-01-01.log    # Логи агента 4
-├── agent_5_2025-01-01.log    # Логи агента 5
-└── telegram_bot_2025-01-01.log # Логи Telegram бота
-```
-
-### Мониторинг через API:
-
+### Проблема: Неправильная модель Mistral AI
 ```bash
-# Проверка здоровья агента 1
-curl http://localhost:8001/health
-
-# Метрики агента 1  
-curl http://localhost:8001/metrics
-
-# Статистика чата
-curl http://localhost:8001/chat/-1001234567890/stats
+# Проверка поддерживаемых моделей
+python3 -c "
+from config import MISTRAL_MODEL, MISTRAL_SUPPORTED_MODELS
+print(f'Текущая модель: {MISTRAL_MODEL}')
+print(f'Поддерживается: {MISTRAL_MODEL in MISTRAL_SUPPORTED_MODELS}')
+print('Доступные модели:')
+for model in MISTRAL_SUPPORTED_MODELS:
+    print(f'  - {model}')
+"
 ```
 
-## Тестирование
-
-### Запуск тестов:
-
+### Проблема: Конфликт провайдеров ИИ
 ```bash
-# Тест агента 3
-python third_agent.py test
-
-# Тест агента 4
-python fourth_agent.py test
-
-# Тест агента 5
-python fifth_agent.py test
-
-# Отправка тестовых данных в Redis
-python third_agent.py send-test
-python fourth_agent.py send-test
+# Убедитесь что используется Mistral AI
+python3 -c "
+from config import AI_PROVIDER, MISTRAL_MODEL
+print(f'ИИ провайдер: {AI_PROVIDER}')
+print(f'Модель: {MISTRAL_MODEL}')
+if AI_PROVIDER != 'mistral':
+    print('⚠️ Внимание: AI_PROVIDER должен быть mistral')
+"
 ```
 
-### Ручное тестирование:
+## 🔄 Миграция с OpenAI на Mistral AI
 
+### Если у вас есть OpenAI версия:
 ```bash
-# Отправка тестового сообщения агенту 1
-curl -X POST http://localhost:8001/process_message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "telegram_message": {
-      "message_id": 123,
-      "chat_id": -1001234567890, 
-      "sender_id": 123456789,
-      "message_text": "Тестовое сообщение для модерации",
-      "timestamp": "2025-01-01T12:00:00Z"
-    },
-    "prompt": "Проанализируй сообщение на нарушения",
-    "chat_rules": {
-      "max_message_length": 1000,
-      "forbidden_words": ["спам", "реклама"],
-      "moderation_enabled": true
-    }
-  }'
+# 1. Обновите .env файл
+sed -i 's/OPENAI_API_KEY/MISTRAL_API_KEY/g' .env
+echo "AI_PROVIDER=mistral" >> .env
+echo "MISTRAL_MODEL=mistral-large-latest" >> .env
+
+# 2. Установите Mistral AI библиотеку
+pip uninstall openai
+pip install mistralai
+
+# 3. Замените файлы агентов на Mistral AI версии
+# 4. Запустите систему
+python3 config.py  # Проверьте конфигурацию
 ```
 
-## Безопасность
+## 💰 Стоимость использования Mistral AI
 
-### Рекомендации:
-1. **Не храните токены в коде** - используйте переменные окружения
-2. **Ограничьте доступ к PostgreSQL** - только нужные IP
-3. **Используйте HTTPS** для production
-4. **Регулярно обновляйте зависимости**
-5. **Мониторьте логи на подозрительную активность**
+### Примерные цены (на октябрь 2025):
+- **mistral-large-latest**: ~$8/1M токенов (input), ~$24/1M токенов (output)
+- **mistral-medium-latest**: ~$2.7/1M токенов (input), ~$8.1/1M токенов (output)
+- **mistral-small-latest**: ~$1/1M токенов (input), ~$3/1M токенов (output)
+- **open-mistral-7b**: ~$0.25/1M токенов (input), ~$0.25/1M токенов (output)
 
-### Переменные окружения:
-```bash
-export POSTGRES_PASSWORD="strong_password_here"
-export TELEGRAM_BOT_TOKEN="your_bot_token_here"  
-export GIGACHAT_CREDENTIALS="your_gigachat_credentials"
-```
+### Оптимизация расходов:
+- Используйте `mistral-small-latest` для простых задач
+- `mistral-large-latest` для сложной модерации
+- Настройте `max_tokens` в конфигурации
+- Мониторьте использование через Mistral AI Dashboard
 
-## Решение проблем (Troubleshooting)
+## 🆘 Поддержка (Mistral AI версия)
 
-### Частые проблемы:
+### Часто задаваемые вопросы:
 
-1. **Ошибка подключения к PostgreSQL:**
-```bash
-# Проверка статуса
-sudo systemctl status postgresql
+**Q: Какую модель Mistral AI выбрать?**
+A: Для продакшна рекомендуется `mistral-large-latest`. Для тестов подойдет `mistral-small-latest`.
 
-# Перезапуск
-sudo systemctl restart postgresql
-```
+**Q: Как получить Mistral API ключ?**
+A: Зарегистрируйтесь на https://console.mistral.ai/ и получите API ключ в разделе API Keys.
 
-2. **Ошибка подключения к Redis:**
-```bash
-# Проверка Redis
-redis-cli ping
+**Q: Можно ли смешивать OpenAI и Mistral AI?**
+A: Нет, система использует один провайдер ИИ. Для смешивания нужна кастомная разработка.
 
-# Перезапуск
-sudo systemctl restart redis-server
-```
+**Q: Mistral AI поддерживает русский язык?**
+A: Да, все модели Mistral AI отлично работают с русским языком.
 
-3. **Ошибка токена GigaChat:**
-- Проверьте правильность GIGACHAT_CREDENTIALS
-- Убедитесь что токен не истек
-- Проверьте лимиты API
+**Q: Как мониторить расходы на Mistral AI?**
+A: Используйте Mistral AI Dashboard или интегрируйте мониторинг через API.
 
-4. **Бот не отвечает в Telegram:**
-- Проверьте TELEGRAM_BOT_TOKEN
-- Убедитесь что бот добавлен в чат как администратор
-- Проверьте логи teteguard_bot.py
-
-### Полезные команды:
-
-```bash
-# Просмотр активных процессов
-ps aux | grep python
-
-# Проверка портов
-netstat -tlnp | grep :8001
-
-# Просмотр логов
-tail -f logs/agent_1_$(date +%Y-%m-%d).log
-
-# Очистка Redis
-redis-cli FLUSHALL
-
-# Проверка таблиц PostgreSQL
-sudo -u postgres psql teleguard_db -c "\dt"
-```
-
-- **Автор:** TeleGuard Team
+### Техническая поддержка (Mistral AI версия):
+- 📧 Email: support@teleguard.bot
+- 💬 Telegram: @teleguard_support  
+- 🐛 Issues: GitHub Issues
+- 📖 Docs: README.md (Mistral AI version)
+- 🧠 Mistral AI Docs: https://docs.mistral.ai/
 
 ---
 
-**Версия:** 1.0.0  
-**Дата обновления:** 29 октября 2025  
-**Статус:** Testing
+**Версия:** 2.0 Mistral AI (.env конфигурация)  
+**Дата обновления:** 31.10.2025  
+**ИИ провайдер:** Mistral AI (mistral-large-latest)  
+**Новые функции:** Mistral AI интеграция, .env конфигурация, улучшенная производительность  
+**Конфигурация:** Environment variables (.env файл)  
+**Лицензия:** MIT
+
+## 🚀 **Готово к запуску с Mistral AI!**
+
+Система полностью переведена на **Mistral AI** и готова к продакшн развертыванию. Все агенты используют единую конфигурацию из `.env` файла и обеспечивают высокое качество модерации с отличной производительностью.

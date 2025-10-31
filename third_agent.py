@@ -1,248 +1,149 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ 3.2 — Модерация с GigaChat (Обновленные токены)
+АГЕНТ №3 — Mistral AI модератор (v2.0)
 """
 
-import requests
 import json
 import redis
 import time
-import logging
-from typing import Dict, Any
-import urllib3
+from typing import Dict, Any, List
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, BigInteger, Text
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import asyncio
+from mistralai.client import MistralClient
+from mistralai.models.chat_completion import ChatMessage
 
-# Отключаем warning SSL
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Импортируем централизованную конфигурацию
+from config import (
+    MISTRAL_API_KEY,
+    MISTRAL_MODEL,
+    MISTRAL_GENERATION_PARAMS,
+    get_redis_config,
+    QUEUE_AGENT_3_INPUT,
+    QUEUE_AGENT_3_OUTPUT,
+    QUEUE_AGENT_5_INPUT,
+    AGENT_PORTS,
+    DEFAULT_RULES,
+    setup_logging
+)
 
 # ============================================================================
 # ЛОГИРОВАНИЕ
 # ============================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [АГЕНТ 3] %(levelname)s: %(message)s'
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging("АГЕНТ 3")
 
 # ============================================================================
-# КОНФИГУРАЦИЯ БД
+# ИНИЦИАЛИЗАЦИЯ MISTRAL AI
 # ============================================================================
-POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
+mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
 
 # ============================================================================
-# КОНФИГУРАЦИЯ GIGACHAT (ОБНОВЛЕННЫЕ ТОКЕНЫ)
+# АНАЛИЗ ЧЕРЕЗ MISTRAL AI С НОВЫМ ПРОМПТОМ v2.0
 # ============================================================================
-ACCESS_TOKEN = "eyJjdHkiOiJqd3QiLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIiwiYWxnIjoiUlNBLU9BRVAtMjU2In0.rDxqb5-B5a_phZFd_mbBuuOMjeIpHbBOAssZ1M0j3K9F7wbJyn4wFxURTUKhZo8XKc4bUlW5V0LAI3QkwkGQIHJtznCS7Ij8PH41S1eWyHySMFo9u96zcFJApzKuoxXgmzsGk1Ibx5sEt8yQzqVcgqcXecM-S2rjifP849RZPbwbe1AAWP_8fIyasrQ7eNXXCYKgqfuCh6GWYuKglyC3ZSxnvjgRikGgWASbGG5qW5QzVg-dxqWel61rNuvZUUletTYlwY049WVoMgw1ziKQc6LlglqWul6IrTmKF-dcQYs_BB7GIfsRKVAitc3PA_zbpCOKJ-GdolYi0H3hhvgjbA.YuvTziLeup589XJTMqbv0A.NFbeLLa6eNvXCfhUW4DoqFhoZN-svSrNRt6v3qDnVDWuQTHT_AjddmtWa2ANIELs9dnuNPeuwVLM01pK8I8cgdAuWc1RtPsaok7ESx9CYvQBb3VWZAOy5h9p32Khg2B1yyZbL1kuEnEblvBJQTUUkzj3qNO2bIyb0InTdHIDLessLW_RIfWkhZWc7eia_I92MVvMem0WGl9iynlPl-hmsqOB_tGmzRDTH-aqv2f76EHOWFE1DMxcgh7EJLhHNrDHwygA_1jrylvhjLBJEfJWEbLMAThQ1emaJu9Dx30Kb8alCUz0nB6Bfw9E9xG5iQJPyX19s3WdcBPe9DAno3NrjkYDVgCh9G9qCDLYhx4pvhhh3mtd_IXaUstqPPk-vMOqAhVv64Yy-ZeYBnXEhcqXLt5UgD41Cm-ETCqAoGNVWpN-IYziuRRavN3AAivg-FZIRobN2OOhlahPkLyvOaLyVC5oCnEFSxZfkofnC5yafUs3dsQZ7X4Bmhx199k9cvLRBToFyTkWg6doJlSt_0Tg2cUm-4z-4JO1V48GoFlg7Tco8Sg3pLbH2teZMg8x3pR2EuJi7tS6W_JBEo-X3mUEdvOOcpw6j9VWDQ-nDAz6BHOdf6xKW_jqj64RdeGNbXzPDVwtsia2kZPvf0KhhhlHDKwVupgoPgxC4a6aE8Bl_8R71AW2x45U9rCnyTl050CBg1ufapBTfIY4j88zo2-3nNqAVdvDCLuhj4szO4ovg-Y.dwx2dXz4CSDmkDlUzkzee_NpyZJY7No-RyOq6VupZwE"
-AUTH_TOKEN = "ODE5YTgxODUtMzY2MC00NDM5LTgxZWItYzU1NjVhODgwOGVkOmZmNWEyN2RjLWFlZmMtNGY0NC1hNmJlLTAzZmNiOTc0MjJkMg=="
-
-# ============================================================================
-# КОНФИГУРАЦИЯ REDIS
-# ============================================================================
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-REDIS_DB = 0
-REDIS_PASSWORD = None
-
-# Очереди для взаимодействия с другими агентами
-QUEUE_AGENT_3_INPUT = "queue:agent3:input"
-QUEUE_AGENT_3_OUTPUT = "queue:agent3:output"
-QUEUE_AGENT_4_INPUT = "queue:agent4:input"
-QUEUE_AGENT_5_INPUT = "queue:agent5:input"
-
-# ============================================================================
-# МОДЕЛИ БД (ЕДИНЫЕ ДЛЯ ВСЕХ АГЕНТОВ)
-# ============================================================================
-Base = declarative_base()
-
-class Chat(Base):
-    __tablename__ = 'chats'
-    id = Column(Integer, primary_key=True)
-    tg_chat_id = Column(String, unique=True, nullable=False)
-    title = Column(String, nullable=True)
-    chat_type = Column(String, default='group')
-    added_at = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Boolean, default=True)
-    
-    messages = relationship('Message', back_populates='chat', cascade="all, delete")
-    moderators = relationship('Moderator', back_populates='chat', cascade="all, delete")
-    negative_messages = relationship('NegativeMessage', back_populates='chat', cascade="all, delete")
-
-class Message(Base):
-    __tablename__ = 'messages'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    message_id = Column(BigInteger, nullable=False)
-    sender_username = Column(String)
-    sender_id = Column(BigInteger)
-    message_text = Column(Text)
-    message_link = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    processed_at = Column(DateTime)
-    ai_response = Column(Text)
-    
-    chat = relationship('Chat', back_populates='messages')
-
-class Moderator(Base):
-    __tablename__ = 'moderators'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    username = Column(String)
-    telegram_user_id = Column(BigInteger)
-    is_active = Column(Boolean, default=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
-    
-    chat = relationship('Chat', back_populates='moderators')
-
-class NegativeMessage(Base):
-    __tablename__ = 'negative_messages'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    message_link = Column(String)
-    sender_username = Column(String)
-    sender_id = Column(BigInteger)
-    negative_reason = Column(Text)
-    is_sent_to_moderators = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    agent_id = Column(Integer) # Какой агент отметил как негативное
-    
-    chat = relationship('Chat', back_populates='negative_messages')
-
-# ============================================================================
-# ИНИЦИАЛИЗАЦИЯ БД И REDIS
-# ============================================================================
-engine = create_engine(POSTGRES_URL)
-Base.metadata.create_all(engine)
-SessionLocal = sessionmaker(bind=engine)
-
-def get_db_session():
-    return SessionLocal()
-
-# ============================================================================
-# СПИСОК НЕЦЕНЗУРНЫХ СЛОВ (для дополнительной проверки)
-# ============================================================================
-PROFANITY_WORDS = [
-    "сука", "чурка", "дурак", "идиот", "тупой", "долбоеб", "мудак",
-    "хуй", "пизд", "ебан", "бля", "гандон", "уебок", "чмо", "дебил",
-    "даун", "урод", "мразь", "быдло", "козел", "свинья", "сволочь"
-]
-
-DISCRIMINATION_WORDS = [
-    "чурка", "хохол", "москаль", "жид", "негр", "азиат",
-    "узкоглазый", "черножопый", "чучмек"
-]
-
-# ============================================================================
-# РАБОТА С GIGACHAT API
-# ============================================================================
-def check_profanity_simple(message):
+def analyze_message_with_mistral(message: str, rules: List[str]) -> dict:
     """
-    Простая проверка на нецензурные слова (дополнительная фильтрация).
-    Возвращает True если найдена нецензурщина.
+    Анализ сообщения через Mistral AI с обновленным промптом v2.0
     """
-    message_lower = message.lower()
-    for word in PROFANITY_WORDS + DISCRIMINATION_WORDS:
-        if word in message_lower:
-            return True, f"Обнаружено запрещённое слово: '{word}'"
-    return False, ""
+    try:
+        # Если правил нет, используем стандартные
+        if not rules:
+            rules = DEFAULT_RULES
+            logger.info("Используются стандартные правила v2.0")
+        
+        rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
+        
+        system_message = f"""Ты — модератор группового чата. Твоя задача — получать сообщения из чата и анализировать их с точки зрения соответствия правилам. По каждому сообщению выноси вердикт: «банить» или «не банить», указывая причину решения и степень уверенности в процентах.
 
-def check_message_with_gigachat(message, rules, prompt, token):
-    """
-    Отправляет запрос в GigaChat API для анализа сообщения.
-    """
-    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    
-    rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
-    system_msg = f"""Ты — строгий модератор Telegram-канала.
 ПРАВИЛА ЧАТА:
 {rules_text}
 
-{prompt}"""
-    
-    user_msg = f"Сообщение пользователя:\n\"{message}\""
-    
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
-    data = {
-        "model": "GigaChat",
-        "messages": [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 300
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=30, verify=False)
-        response.raise_for_status()
-        result = response.json()
-        content = result["choices"][0]["message"]["content"]
-        return content
-    except Exception as e:
-        error_msg = f"Ошибка при запросе к GigaChat: {e}"
-        logger.error(error_msg)
-        return error_msg
+Формат вывода:
+Вердикт: <банить/не банить>
+Причина: <текст причины>
+Уверенность: <число от 0 до 100>%
 
-def parse_gigachat_response(text, message):
-    """
-    Парсит ответ GigaChat и определяет, нужен ли бан.
-    """
-    text_lower = text.lower()
-    
-    # Сначала проверяем простым поиском по словам
-    has_profanity, profanity_reason = check_profanity_simple(message)
-    if has_profanity:
+ИНСТРУКЦИИ:
+1. Анализируй сообщение строго по указанным правилам
+2. Будь объективным в оценке  
+3. Указывай конкретную причину решения
+4. Уверенность должна отражать степень нарушения (0-100%)
+
+Если правила отсутствуют, используй стандартную настройку:
+1. Запрещена расовая дискриминация
+2. Запрещены ссылки"""
+        
+        user_message = f"Сообщение пользователя:\n\"{message}\""
+        
+        messages = [
+            ChatMessage(role="system", content=system_message),
+            ChatMessage(role="user", content=user_message)
+        ]
+        
+        response = mistral_client.chat(
+            model=MISTRAL_MODEL,
+            messages=messages,
+            temperature=MISTRAL_GENERATION_PARAMS["temperature"],
+            max_tokens=MISTRAL_GENERATION_PARAMS["max_tokens"],
+            top_p=MISTRAL_GENERATION_PARAMS["top_p"]
+        )
+        
+        content = response.choices[0].message.content
+        
+        # Парсим ответ в новом формате
+        content_lower = content.lower()
+        
+        # Ищем вердикт
+        ban = False
+        if "вердикт:" in content_lower:
+            verdict_line = [line for line in content.split('\n') if 'вердикт:' in line.lower()]
+            if verdict_line:
+                verdict_text = verdict_line[0].lower()
+                if "банить" in verdict_text and "не банить" not in verdict_text:
+                    ban = True
+        
+        # Ищем уверенность
+        confidence = 0.6  # По умолчанию
+        if "уверенность:" in content_lower:
+            confidence_line = [line for line in content.split('\n') if 'уверенность:' in line.lower()]
+            if confidence_line:
+                try:
+                    import re
+                    numbers = re.findall(r'\d+', confidence_line[0])
+                    if numbers:
+                        confidence = int(numbers[0]) / 100.0
+                        confidence = min(1.0, max(0.0, confidence))
+                except:
+                    confidence = 0.6
+        
         return {
-            "ban": True,
-            "reason": f"Вердикт: да. {profanity_reason} (Автоматическая фильтрация)"
+            "ban": ban,
+            "reason": content,
+            "confidence": confidence,
+            "rules_used": rules,
+            "ai_response": True,
+            "model": MISTRAL_MODEL,
+            "status": "success"
         }
-    
-    # Ключевые слова для BAN
-    ban_keywords = [
-        "вердикт: да", "вердикт:да", "вердикт да",
-        "нарушение", "нарушает", "забанить", "блокировать",
-        "оскорбление", "мат", "нецензурн", "дискриминация"
-    ]
-    
-    # Ключевые слова для НЕТ BAN
-    no_ban_keywords = [
-        "вердикт: нет", "вердикт:нет", "вердикт нет",
-        "нет нарушений", "не нарушает", "правила соблюдены",
-        "нарушений не", "не обнаружено"
-    ]
-    
-    # Проверяем ответ GigaChat
-    has_ban_words = any(word in text_lower for word in ban_keywords)
-    has_no_ban_words = any(word in text_lower for word in no_ban_keywords)
-    
-    # Логика принятия решения
-    if has_no_ban_words and not has_ban_words:
-        ban = False
-    elif has_ban_words:
-        ban = True
-    else:
-        # Если непонятно — по умолчанию НЕ БАНИТЬ
-        ban = False
-    
-    return {
-        "ban": ban,
-        "reason": text.strip()
-    }
+        
+    except Exception as e:
+        logger.error(f"Ошибка Mistral AI анализа: {e}")
+        return {
+            "ban": False,
+            "reason": f"Вердикт: не банить\nПричина: Ошибка ИИ анализа: {e}\nУверенность: 0%",
+            "confidence": 0.0,
+            "rules_used": rules if rules else DEFAULT_RULES,
+            "ai_response": False,
+            "model": "error",
+            "status": "error"
+        }
 
 # ============================================================================
 # ОСНОВНАЯ ЛОГИКА АГЕНТА 3
 # ============================================================================
-def moderation_agent_3(input_data, db_session):
+def moderation_agent_3(input_data):
     """
-    АГЕНТ 3 — Независимый модератор с усиленной проверкой.
-    Сохраняет результаты в БД и отправляет в Redis для других агентов.
+    АГЕНТ 3 — Mistral AI модератор с новым промптом v2.0.
+    Анализирует сообщения через Mistral AI API.
     """
     message = input_data.get("message", "")
     rules = input_data.get("rules", [])
@@ -258,7 +159,8 @@ def moderation_agent_3(input_data, db_session):
         return {
             "agent_id": 3,
             "ban": False,
-            "reason": "Ошибка: пустое сообщение",
+            "reason": "Вердикт: не банить\nПричина: Пустое сообщение\nУверенность: 0%",
+            "confidence": 0,
             "message": "",
             "user_id": user_id,
             "username": username,
@@ -267,160 +169,60 @@ def moderation_agent_3(input_data, db_session):
             "status": "error"
         }
     
+    # Если правил нет, используем стандартные
     if not rules:
-        return {
-            "agent_id": 3,
-            "ban": False,
-            "reason": "Ошибка: правила не переданы",
-            "message": message,
-            "user_id": user_id,
-            "username": username,
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "status": "error"
-        }
+        rules = DEFAULT_RULES
+        logger.info("Используются стандартные правила v2.0")
     
-    token = ACCESS_TOKEN
-    if not token:
-        return {
-            "agent_id": 3,
-            "ban": False,
-            "reason": "Ошибка: отсутствует access token",
-            "message": message,
-            "user_id": user_id,
-            "username": username,
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "status": "error"
-        }
+    # Анализируем сообщение через Mistral AI
+    analysis_result = analyze_message_with_mistral(message, rules)
     
-    # Промпт для GigaChat
-    prompt = """
-ТВОЯ ЗАДАЧА:
-Проанализируй сообщение и определи, нарушает ли оно ЛЮБОЕ из правил выше.
-
-КРИТЕРИИ ПРОВЕРКИ:
-✓ Нецензурные слова, маты, оскорбления
-✓ Дискриминация по национальности, расе, религии
-✓ Реклама сторонних каналов/групп
-✓ Спам, флуд
-✓ Агрессия, угрозы
-
-ИНСТРУКЦИИ:
-1. Если в сообщении есть ХОТЯ БЫ ОДНО нарушение — вердикт "да"
-2. Будь СТРОГИМ: даже завуалированные оскорбления — это нарушение
-3. Если сомневаешься — лучше забанить (безопасность чата важнее)
-
-ФОРМАТ ОТВЕТА (строго):
-Вердикт: да/нет
-Причина: [конкретное объяснение]
-
-НАЧИНАЙ АНАЛИЗ:"""
-    
-    # Получаем вердикт от GigaChat
-    verdict_text = check_message_with_gigachat(message, rules, prompt, token)
-    logger.info(f"Ответ GigaChat получен")
-    
-    # Парсим ответ
-    result = parse_gigachat_response(verdict_text, message)
-    
+    # Formируем результат
     output = {
         "agent_id": 3,
-        "ban": result["ban"],
-        "reason": result["reason"],
+        "ban": analysis_result["ban"],
+        "reason": analysis_result["reason"],
+        "confidence": analysis_result["confidence"],
         "message": message,
         "user_id": user_id,
         "username": username,
         "chat_id": chat_id,
         "message_id": message_id,
         "message_link": message_link,
-        "status": "success",
-        "confidence": 0.85 if result["ban"] else 0.8,
+        "rules_used": analysis_result["rules_used"],
+        "ai_model": analysis_result["model"],
+        "ai_provider": "Mistral AI",
+        "prompt_version": "v2.0 - новый формат",
+        "status": analysis_result["status"],
         "timestamp": datetime.now().isoformat()
     }
     
-    # Сохраняем исходное сообщение в БД
-    try:
-        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
-        if not chat:
-            chat = Chat(tg_chat_id=str(chat_id))
-            db_session.add(chat)
-            db_session.commit()
-        
-        # Проверяем существующее сообщение
-        existing_message = db_session.query(Message).filter_by(
-            chat_id=chat.id, 
-            message_id=message_id
-        ).first()
-        
-        if existing_message:
-            # Обновляем AI response
-            existing_message.ai_response = result["reason"]
-            existing_message.processed_at = datetime.utcnow()
-        else:
-            # Создаем новое сообщение
-            message_obj = Message(
-                chat_id=chat.id,
-                message_id=message_id,
-                sender_username=username,
-                sender_id=user_id,
-                message_text=message,
-                message_link=message_link,
-                ai_response=result["reason"],
-                processed_at=datetime.utcnow()
-            )
-            db_session.add(message_obj)
-        
-        db_session.commit()
-        
-        # Если обнаружено нарушение — сохраняем в negative_messages
-        if result["ban"]:
-            negative_msg = NegativeMessage(
-                chat_id=chat.id,
-                message_link=message_link,
-                sender_username=username,
-                sender_id=user_id,
-                negative_reason=result["reason"],
-                agent_id=3,
-                is_sent_to_moderators=False
-            )
-            db_session.add(negative_msg)
-            db_session.commit()
-            logger.warning(f"БАН ⛔ для @{username}: {result['reason'][:50]}...")
-        else:
-            logger.info(f"ОК ✅ для @{username}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении в БД: {e}")
-        output["db_error"] = str(e)
+    if analysis_result["ban"]:
+        logger.warning(f"БАН ⛔ для @{username}: {analysis_result['confidence']*100:.0f}% уверенности (Mistral AI)")
+    else:
+        logger.info(f"ОК ✅ для @{username}: {analysis_result['confidence']*100:.0f}% уверенности (Mistral AI)")
     
     return output
 
 # ============================================================================
-# РАБОТА С REDIS И ВЗАИМОДЕЙСТВИЕ МЕЖДУ АГЕНТАМИ
+# РАБОТА С REDIS
 # ============================================================================
 class Agent3Worker:
     def __init__(self):
         try:
-            redis_config = {
-                "host": REDIS_HOST,
-                "port": REDIS_PORT,
-                "db": REDIS_DB,
-                "password": REDIS_PASSWORD,
-                "decode_responses": True
-            }
+            redis_config = get_redis_config()
             self.redis_client = redis.Redis(**redis_config)
             self.redis_client.ping()
-            logger.info(f"✅ Подключение к Redis успешно: {REDIS_HOST}:{REDIS_PORT}")
+            logger.info(f"✅ Подключение к Redis успешно")
         except Exception as e:
             logger.error(f"❌ Не удалось подключиться к Redis: {e}")
             raise
     
-    def process_message(self, message_data, db_session):
+    def process_message(self, message_data):
         """Обрабатывает сообщение от входной очереди"""
         try:
             input_data = json.loads(message_data)
-            result = moderation_agent_3(input_data, db_session)
+            result = moderation_agent_3(input_data)
             return result
         except json.JSONDecodeError as e:
             logger.error(f"Невалидный JSON: {e}")
@@ -428,6 +230,7 @@ class Agent3Worker:
                 "agent_id": 3,
                 "ban": False,
                 "reason": f"Ошибка парсинга данных: {e}",
+                "confidence": 0,
                 "message": "",
                 "status": "json_error"
             }
@@ -437,6 +240,7 @@ class Agent3Worker:
                 "agent_id": 3,
                 "ban": False,
                 "reason": f"Внутренняя ошибка агента 3: {e}",
+                "confidence": 0,
                 "message": "",
                 "status": "error"
             }
@@ -445,27 +249,29 @@ class Agent3Worker:
         """Отправляет результат в выходную очередь"""
         try:
             result_json = json.dumps(result, ensure_ascii=False)
-            # Отправляем результат в очередь Агента 3
+            
+            # Отправляем результат в выходную очередь Агента 3
             self.redis_client.rpush(QUEUE_AGENT_3_OUTPUT, result_json)
             
-            # Если обнаружено нарушение, отправляем также в очередь Агента 5
-            if result.get("ban"):
-                self.redis_client.rpush(QUEUE_AGENT_5_INPUT, result_json)
-                logger.info(f"✅ Результат отправлен Агенту 5")
+            # Отправляем результат в очередь Агента 5 (арбитр)
+            self.redis_client.rpush(QUEUE_AGENT_5_INPUT, result_json)
             
-            logger.info(f"✅ Результат отправлен в очередь")
+            logger.info(f"✅ Результат отправлен в очереди")
             
         except Exception as e:
             logger.error(f"Не удалось отправить результат: {e}")
     
     def run(self):
         """Главный цикл обработки сообщений"""
-        logger.info(f"✅ Запущен. Ожидаю сообщения из: {QUEUE_AGENT_3_INPUT}")
+        logger.info(f"✅ Агент 3 запущен (Mistral AI модератор v3.6)")
+        logger.info(f"   Модель: {MISTRAL_MODEL}")
+        logger.info(f"   Слушаю очередь: {QUEUE_AGENT_3_INPUT}")
         logger.info(f"   Отправляю результаты в: {QUEUE_AGENT_3_OUTPUT}")
         logger.info(f"   Отправляю в Агента 5: {QUEUE_AGENT_5_INPUT}")
+        logger.info(f"   Стандартные правила v2.0: {DEFAULT_RULES}")
+        logger.info(f"   ИИ провайдер: Mistral AI")
         logger.info("   Нажмите Ctrl+C для остановки\n")
         
-        db_session = None
         try:
             while True:
                 try:
@@ -476,29 +282,22 @@ class Agent3Worker:
                     queue_name, message_data = result
                     logger.info(f"📨 Получено сообщение")
                     
-                    # Создаем новую сессию БД для каждого сообщения
-                    db_session = get_db_session()
-                    output = self.process_message(message_data, db_session)
+                    output = self.process_message(message_data)
                     self.send_result(output)
-                    db_session.close()
                     
                     logger.info(f"✅ Обработка завершена\n")
                     
                 except Exception as e:
                     logger.error(f"Ошибка в цикле: {e}")
-                    if db_session:
-                        db_session.close()
                     time.sleep(1)
                     
         except KeyboardInterrupt:
             logger.info("\n❌ Агент 3 остановлен (Ctrl+C)")
         finally:
-            if db_session:
-                db_session.close()
             logger.info("Агент 3 завершил работу")
 
 # ============================================================================
-# HEALTH CHECK ENDPOINT
+# HEALTH CHECK HTTP SERVER
 # ============================================================================
 def create_health_check_server():
     """Создает простой HTTP сервер для проверки здоровья агента"""
@@ -514,8 +313,12 @@ def create_health_check_server():
                 health_info = {
                     "status": "online",
                     "agent_id": 3,
-                    "name": "Агент №3 (GigaChat)",
-                    "version": "3.2",
+                    "name": "Агент №3 (Mistral AI модератор)",
+                    "version": "3.6 (Mistral)",
+                    "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
+                    "prompt_version": "v2.0 - новый формат",
+                    "configuration": "Environment variables (.env)",
+                    "default_rules": DEFAULT_RULES,
                     "timestamp": datetime.now().isoformat(),
                     "redis_queue": QUEUE_AGENT_3_INPUT,
                     "uptime_seconds": int(time.time())
@@ -529,10 +332,10 @@ def create_health_check_server():
             # Подавляем логирование HTTP запросов
             pass
     
-    server = HTTPServer(('localhost', 8003), HealthCheckHandler)
+    server = HTTPServer(('localhost', AGENT_PORTS[3]), HealthCheckHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    logger.info("✅ Health check сервер запущен на порту 8003")
+    logger.info(f"✅ Health check сервер запущен на порту {AGENT_PORTS[3]}")
 
 # ============================================================================
 # ТОЧКА ВХОДА
@@ -543,25 +346,49 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         mode = sys.argv[1]
         if mode == "test":
-            # Тестирование
-            test_input = {
-                "message": "сука чурка",
-                "rules": [
-                    "Запрещена реклама",
-                    "Запрещены нецензурные выражения",
-                    "Запрещена дискриминация"
-                ],
-                "user_id": 123,
-                "username": "test_user",
-                "chat_id": -100,
-                "message_id": 1,
-                "message_link": "https://t.me/test/1"
-            }
+            # Тестирование с новым форматом v2.0
+            test_cases = [
+                {
+                    "message": "Привет всем! Как дела?",
+                    "rules": [],
+                    "description": "Нормальное сообщение"
+                },
+                {
+                    "message": "Ты дурак и идиот! Хуй тебе!",
+                    "rules": DEFAULT_RULES,
+                    "description": "Мат и оскорбления"
+                },
+                {
+                    "message": "Переходи по ссылке t.me/spam_channel! Заработок от 100$ в день!",
+                    "rules": DEFAULT_RULES,
+                    "description": "Спам с ссылкой"
+                },
+                {
+                    "message": "Все эти негры должны убираться отсюда!",
+                    "rules": DEFAULT_RULES,
+                    "description": "Расовая дискриминация"
+                }
+            ]
             
-            db_session = get_db_session()
-            result = moderation_agent_3(test_input, db_session)
-            db_session.close()
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+            for i, test_case in enumerate(test_cases, 1):
+                print(f"\n--- Тест {i}: {test_case['description']} ---")
+                
+                test_input = {
+                    "message": test_case["message"],
+                    "rules": test_case["rules"],
+                    "user_id": 123 + i,
+                    "username": f"test_user_{i}",
+                    "chat_id": -100,
+                    "message_id": i,
+                    "message_link": f"https://t.me/test/{i}"
+                }
+                
+                result = moderation_agent_3(test_input)
+                
+                print(f"Вердикт: {'БАН' if result['ban'] else 'ОК'}")
+                print(f"Уверенность: {result['confidence']*100:.0f}%")
+                print(f"Модель: {result.get('ai_model', 'N/A')}")
+                print(f"Причина: {result['reason']}")
     else:
         # Запуск основного цикла обработки
         try:
