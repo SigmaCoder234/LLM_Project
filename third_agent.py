@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №3 — Mistral AI модератор (v2.0)
+АГЕНТ №3 — Полный модератор через Mistral AI (исправленная версия v0.4.2)
 """
 
 import json
@@ -9,9 +9,35 @@ import redis
 import time
 from typing import Dict, Any, List
 from datetime import datetime
-import asyncio
-from mistralai.client import MistralClient
-from mistralai.models.chat_completion import ChatMessage
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+import threading
+
+# Mistral AI импорты - исправленная версия для 0.4.2
+try:
+    from mistralai.client import MistralClient
+    from mistralai.models.chat_completion import ChatMessage
+    MISTRAL_IMPORT_SUCCESS = True
+    MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
+except ImportError:
+    try:
+        # Fallback для новой версии
+        from mistralai import Mistral as MistralClient
+        from mistralai import UserMessage, SystemMessage
+        def ChatMessage(role, content): return {"role": role, "content": content}
+        MISTRAL_IMPORT_SUCCESS = True
+        MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
+    except ImportError:
+        print("❌ Не удалось импортировать Mistral AI")
+        MISTRAL_IMPORT_SUCCESS = False
+        MISTRAL_IMPORT_VERSION = "none"
+        # Заглушки
+        class MistralClient:
+            def __init__(self, api_key): pass
+            def chat(self, **kwargs): 
+                raise ImportError("Mistral AI не установлен")
+        def ChatMessage(role, content): return {"role": role, "content": content}
 
 # Импортируем централизованную конфигурацию
 from config import (
@@ -32,23 +58,49 @@ from config import (
 # ============================================================================
 logger = setup_logging("АГЕНТ 3")
 
+# Проверяем импорты при запуске
+if MISTRAL_IMPORT_SUCCESS:
+    logger.info(f"✅ Mistral AI импортирован успешно ({MISTRAL_IMPORT_VERSION})")
+else:
+    logger.error("❌ Mistral AI не импортирован, работа в режиме заглушки")
+
 # ============================================================================
 # ИНИЦИАЛИЗАЦИЯ MISTRAL AI
 # ============================================================================
-mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
+if MISTRAL_IMPORT_SUCCESS and MISTRAL_API_KEY:
+    try:
+        mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
+        logger.info("✅ Mistral AI клиент создан")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания Mistral AI клиента: {e}")
+        mistral_client = None
+else:
+    mistral_client = None
+    logger.warning("⚠️ Mistral AI клиент не создан")
 
 # ============================================================================
-# АНАЛИЗ ЧЕРЕЗ MISTRAL AI С НОВЫМ ПРОМПТОМ v2.0
+# МОДЕРАЦИЯ ЧЕРЕЗ MISTRAL AI (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 # ============================================================================
-def analyze_message_with_mistral(message: str, rules: List[str]) -> dict:
+def moderate_message_with_mistral(message: str, rules: List[str]) -> dict:
     """
-    Анализ сообщения через Mistral AI с обновленным промптом v2.0
+    Полная модерация сообщения через Mistral AI с обновленным промптом v2.0
     """
+    
+    # Проверяем доступность Mistral AI
+    if not MISTRAL_IMPORT_SUCCESS or not mistral_client:
+        logger.warning("⚠️ Mistral AI недоступен, используем заглушку")
+        return {
+            "ban": False,
+            "reason": "Вердикт: не банить\nПричина: Mistral AI недоступен\nУверенность: 0%",
+            "confidence": 0.0,
+            "method": "заглушка Mistral AI",
+            "ai_response": False
+        }
+    
     try:
         # Если правил нет, используем стандартные
         if not rules:
             rules = DEFAULT_RULES
-            logger.info("Используются стандартные правила v2.0")
         
         rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
         
@@ -64,13 +116,11 @@ def analyze_message_with_mistral(message: str, rules: List[str]) -> dict:
 
 ИНСТРУКЦИИ:
 1. Анализируй сообщение строго по указанным правилам
-2. Будь объективным в оценке  
+2. Будь объективным в оценке
 3. Указывай конкретную причину решения
 4. Уверенность должна отражать степень нарушения (0-100%)
 
-Если правила отсутствуют, используй стандартную настройку:
-1. Запрещена расовая дискриминация
-2. Запрещены ссылки"""
+Это полный анализ сообщения модератором."""
         
         user_message = f"Сообщение пользователя:\n\"{message}\""
         
@@ -82,14 +132,14 @@ def analyze_message_with_mistral(message: str, rules: List[str]) -> dict:
         response = mistral_client.chat(
             model=MISTRAL_MODEL,
             messages=messages,
-            temperature=MISTRAL_GENERATION_PARAMS["temperature"],
-            max_tokens=MISTRAL_GENERATION_PARAMS["max_tokens"],
-            top_p=MISTRAL_GENERATION_PARAMS["top_p"]
+            temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
+            max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 300),
+            top_p=MISTRAL_GENERATION_PARAMS.get("top_p", 0.9)
         )
         
         content = response.choices[0].message.content
         
-        # Парсим ответ в новом формате
+        # Парсим ответ в новом формате v2.0
         content_lower = content.lower()
         
         # Ищем вердикт
@@ -102,7 +152,7 @@ def analyze_message_with_mistral(message: str, rules: List[str]) -> dict:
                     ban = True
         
         # Ищем уверенность
-        confidence = 0.6  # По умолчанию
+        confidence = 0.75  # По умолчанию
         if "уверенность:" in content_lower:
             confidence_line = [line for line in content.split('\n') if 'уверенность:' in line.lower()]
             if confidence_line:
@@ -113,28 +163,24 @@ def analyze_message_with_mistral(message: str, rules: List[str]) -> dict:
                         confidence = int(numbers[0]) / 100.0
                         confidence = min(1.0, max(0.0, confidence))
                 except:
-                    confidence = 0.6
+                    confidence = 0.75
         
         return {
             "ban": ban,
             "reason": content,
             "confidence": confidence,
-            "rules_used": rules,
-            "ai_response": True,
-            "model": MISTRAL_MODEL,
-            "status": "success"
+            "method": f"Mistral AI модератор ({MISTRAL_IMPORT_VERSION})",
+            "ai_response": True
         }
         
     except Exception as e:
-        logger.error(f"Ошибка Mistral AI анализа: {e}")
+        logger.error(f"Ошибка Mistral AI модерации: {e}")
         return {
             "ban": False,
             "reason": f"Вердикт: не банить\nПричина: Ошибка ИИ анализа: {e}\nУверенность: 0%",
             "confidence": 0.0,
-            "rules_used": rules if rules else DEFAULT_RULES,
-            "ai_response": False,
-            "model": "error",
-            "status": "error"
+            "method": "ошибка Mistral AI",
+            "ai_response": False
         }
 
 # ============================================================================
@@ -142,8 +188,8 @@ def analyze_message_with_mistral(message: str, rules: List[str]) -> dict:
 # ============================================================================
 def moderation_agent_3(input_data):
     """
-    АГЕНТ 3 — Mistral AI модератор с новым промптом v2.0.
-    Анализирует сообщения через Mistral AI API.
+    АГЕНТ 3 — Полный модератор через Mistral AI (исправленная версия v3.7).
+    Глубокий анализ сообщения с использованием ИИ.
     """
     message = input_data.get("message", "")
     rules = input_data.get("rules", [])
@@ -153,7 +199,7 @@ def moderation_agent_3(input_data):
     message_id = input_data.get("message_id")
     message_link = input_data.get("message_link", "")
     
-    logger.info(f"Анализирую сообщение от @{username} в чате {chat_id}")
+    logger.info(f"Модерирую сообщение от @{username} в чате {chat_id}")
     
     if not message:
         return {
@@ -174,38 +220,37 @@ def moderation_agent_3(input_data):
         rules = DEFAULT_RULES
         logger.info("Используются стандартные правила v2.0")
     
-    # Анализируем сообщение через Mistral AI
-    analysis_result = analyze_message_with_mistral(message, rules)
+    # Модерация через Mistral AI
+    moderation_result = moderate_message_with_mistral(message, rules)
     
-    # Formируем результат
     output = {
         "agent_id": 3,
-        "ban": analysis_result["ban"],
-        "reason": analysis_result["reason"],
-        "confidence": analysis_result["confidence"],
+        "ban": moderation_result["ban"],
+        "reason": moderation_result["reason"],
+        "confidence": moderation_result["confidence"],
         "message": message,
         "user_id": user_id,
         "username": username,
         "chat_id": chat_id,
         "message_id": message_id,
         "message_link": message_link,
-        "rules_used": analysis_result["rules_used"],
-        "ai_model": analysis_result["model"],
-        "ai_provider": "Mistral AI",
-        "prompt_version": "v2.0 - новый формат",
-        "status": analysis_result["status"],
+        "method": moderation_result["method"],
+        "rules_used": rules,
+        "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
+        "import_version": MISTRAL_IMPORT_VERSION,
+        "status": "success",
         "timestamp": datetime.now().isoformat()
     }
     
-    if analysis_result["ban"]:
-        logger.warning(f"БАН ⛔ для @{username}: {analysis_result['confidence']*100:.0f}% уверенности (Mistral AI)")
+    if moderation_result["ban"]:
+        logger.warning(f"БАН ⛔ для @{username}: {moderation_result['confidence']*100:.0f}% уверенности ({moderation_result['method']})")
     else:
-        logger.info(f"ОК ✅ для @{username}: {analysis_result['confidence']*100:.0f}% уверенности (Mistral AI)")
+        logger.info(f"ОК ✅ для @{username}: {moderation_result['confidence']*100:.0f}% уверенности ({moderation_result['method']})")
     
     return output
 
 # ============================================================================
-# РАБОТА С REDIS
+# РАБОТА С REDIS И ВЗАИМОДЕЙСТВИЕ МЕЖДУ АГЕНТАМИ
 # ============================================================================
 class Agent3Worker:
     def __init__(self):
@@ -249,11 +294,10 @@ class Agent3Worker:
         """Отправляет результат в выходную очередь"""
         try:
             result_json = json.dumps(result, ensure_ascii=False)
-            
-            # Отправляем результат в выходную очередь Агента 3
+            # Отправляем результат в очередь Агента 3
             self.redis_client.rpush(QUEUE_AGENT_3_OUTPUT, result_json)
             
-            # Отправляем результат в очередь Агента 5 (арбитр)
+            # Отправляем результат в очередь Агента 5
             self.redis_client.rpush(QUEUE_AGENT_5_INPUT, result_json)
             
             logger.info(f"✅ Результат отправлен в очереди")
@@ -263,13 +307,14 @@ class Agent3Worker:
     
     def run(self):
         """Главный цикл обработки сообщений"""
-        logger.info(f"✅ Агент 3 запущен (Mistral AI модератор v3.6)")
+        logger.info(f"✅ Агент 3 запущен (Mistral AI модератор исправленный v3.7)")
         logger.info(f"   Модель: {MISTRAL_MODEL}")
+        logger.info(f"   Импорт: {MISTRAL_IMPORT_VERSION}")
+        logger.info(f"   Статус Mistral AI: {'✅ Доступен' if mistral_client else '❌ Недоступен'}")
         logger.info(f"   Слушаю очередь: {QUEUE_AGENT_3_INPUT}")
         logger.info(f"   Отправляю результаты в: {QUEUE_AGENT_3_OUTPUT}")
         logger.info(f"   Отправляю в Агента 5: {QUEUE_AGENT_5_INPUT}")
         logger.info(f"   Стандартные правила v2.0: {DEFAULT_RULES}")
-        logger.info(f"   ИИ провайдер: Mistral AI")
         logger.info("   Нажмите Ctrl+C для остановки\n")
         
         try:
@@ -297,45 +342,54 @@ class Agent3Worker:
             logger.info("Агент 3 завершил работу")
 
 # ============================================================================
-# HEALTH CHECK HTTP SERVER
+# FASTAPI ПРИЛОЖЕНИЕ
 # ============================================================================
-def create_health_check_server():
-    """Создает простой HTTP сервер для проверки здоровья агента"""
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    import threading
-    
-    class HealthCheckHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == '/health':
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                health_info = {
-                    "status": "online",
-                    "agent_id": 3,
-                    "name": "Агент №3 (Mistral AI модератор)",
-                    "version": "3.6 (Mistral)",
-                    "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
-                    "prompt_version": "v2.0 - новый формат",
-                    "configuration": "Environment variables (.env)",
-                    "default_rules": DEFAULT_RULES,
-                    "timestamp": datetime.now().isoformat(),
-                    "redis_queue": QUEUE_AGENT_3_INPUT,
-                    "uptime_seconds": int(time.time())
-                }
-                self.wfile.write(json.dumps(health_info, ensure_ascii=False).encode())
-            else:
-                self.send_response(404)
-                self.end_headers()
-        
-        def log_message(self, format, *args):
-            # Подавляем логирование HTTP запросов
-            pass
-    
-    server = HTTPServer(('localhost', AGENT_PORTS[3]), HealthCheckHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    logger.info(f"✅ Health check сервер запущен на порту {AGENT_PORTS[3]}")
+app = FastAPI(
+    title="🤖 Агент №3 - Модератор (Mistral AI исправленный)",
+    description="Полная модерация сообщений через Mistral AI",
+    version="3.7"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "online",
+        "agent_id": 3,
+        "name": "Агент №3 (Mistral AI Модератор)",
+        "version": "3.7 (исправленный)",
+        "ai_provider": f"Mistral AI ({MISTRAL_MODEL})" if mistral_client else "Mistral AI (недоступен)",
+        "import_version": MISTRAL_IMPORT_VERSION,
+        "import_success": MISTRAL_IMPORT_SUCCESS,
+        "client_status": "✅ Создан" if mistral_client else "❌ Не создан",
+        "prompt_version": "v2.0 - новый формат",
+        "configuration": "Environment variables (.env)",
+        "default_rules": DEFAULT_RULES,
+        "timestamp": datetime.now().isoformat(),
+        "redis_queue": QUEUE_AGENT_3_INPUT,
+        "uptime_seconds": int(time.time())
+    }
+
+@app.post("/process_message")
+async def process_message_endpoint(message_data: dict):
+    """Обработка сообщения через API"""
+    result = moderation_agent_3(message_data)
+    return result
+
+# ============================================================================
+# ЗАПУСК FASTAPI В ОТДЕЛЬНОМ ПОТОКЕ
+# ============================================================================
+def run_fastapi():
+    """Запуск FastAPI сервера"""
+    uvicorn.run(app, host="localhost", port=AGENT_PORTS[3], log_level="info")
 
 # ============================================================================
 # ТОЧКА ВХОДА
@@ -387,12 +441,20 @@ if __name__ == "__main__":
                 
                 print(f"Вердикт: {'БАН' if result['ban'] else 'ОК'}")
                 print(f"Уверенность: {result['confidence']*100:.0f}%")
-                print(f"Модель: {result.get('ai_model', 'N/A')}")
+                print(f"Метод: {result.get('method', 'N/A')}")
                 print(f"Причина: {result['reason']}")
+                
+        elif mode == "api":
+            # Запуск только FastAPI
+            run_fastapi()
     else:
-        # Запуск основного цикла обработки
+        # Запуск FastAPI в отдельном потоке
+        fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
+        fastapi_thread.start()
+        logger.info(f"✅ FastAPI сервер запущен на порту {AGENT_PORTS[3]}")
+        
+        # Запуск основного Redis worker
         try:
-            create_health_check_server()
             worker = Agent3Worker()
             worker.run()
         except KeyboardInterrupt:

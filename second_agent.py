@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №2 — Анализатор и распределитель (Mistral AI версия)
+АГЕНТ №2 — Анализатор с НОВЫМ Mistral AI API (SDK v1.0+)
 """
 
 import json
@@ -11,13 +11,39 @@ from typing import Dict, Any
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, BigInteger, Text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import threading
-from mistralai.client import MistralClient
-from mistralai.models.chat_completion import ChatMessage
+
+# Новый Mistral AI импорт
+try:
+    from mistralai import Mistral
+    from mistralai import UserMessage, SystemMessage, AssistantMessage
+    MISTRAL_IMPORT_SUCCESS = True
+    MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
+except ImportError:
+    try:
+        # Fallback для старой версии
+        from mistralai.client import MistralClient as Mistral
+        from mistralai.models.chat_completion import ChatMessage
+        def UserMessage(content): return {"role": "user", "content": content}
+        def SystemMessage(content): return {"role": "system", "content": content}
+        def AssistantMessage(content): return {"role": "assistant", "content": content}
+        MISTRAL_IMPORT_SUCCESS = True
+        MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
+    except ImportError:
+        print("❌ Не удалось импортировать Mistral AI")
+        MISTRAL_IMPORT_SUCCESS = False
+        MISTRAL_IMPORT_VERSION = "none"
+        # Заглушки
+        class Mistral:
+            def __init__(self, api_key): pass
+            def chat(self, **kwargs): 
+                raise ImportError("Mistral AI не установлен")
+        def UserMessage(content): return {"role": "user", "content": content}
+        def SystemMessage(content): return {"role": "system", "content": content}
+        def AssistantMessage(content): return {"role": "assistant", "content": content}
 
 # Импортируем централизованную конфигурацию
 from config import (
@@ -35,17 +61,36 @@ from config import (
 )
 
 # ============================================================================
-# ЛОГИРОВАНИЕ
+# ЛОГИРОВАНИЕ И ИНИЦИАЛИЗАЦИЯ
 # ============================================================================
 logger = setup_logging("АГЕНТ 2")
 
-# ============================================================================
-# ИНИЦИАЛИЗАЦИЯ MISTRAL AI
-# ============================================================================
-mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
+if MISTRAL_IMPORT_SUCCESS:
+    logger.info(f"✅ Mistral AI импортирован успешно ({MISTRAL_IMPORT_VERSION})")
+else:
+    logger.error("❌ Mistral AI не импортирован, работа в режиме заглушки")
 
 # ============================================================================
-# МОДЕЛИ БД (ЕДИНЫЕ ДЛЯ ВСЕХ АГЕНТОВ)
+# ИНИЦИАЛИЗАЦИЯ НОВОГО MISTRAL AI КЛИЕНТА
+# ============================================================================
+if MISTRAL_IMPORT_SUCCESS and MISTRAL_API_KEY:
+    try:
+        if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
+            # Новый API
+            mistral_client = Mistral(api_key=MISTRAL_API_KEY)
+        else:
+            # Старый API  
+            mistral_client = Mistral(api_key=MISTRAL_API_KEY)
+        logger.info("✅ Mistral AI клиент создан")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания Mistral AI клиента: {e}")
+        mistral_client = None
+else:
+    mistral_client = None
+    logger.warning("⚠️ Mistral AI клиент не создан")
+
+# ============================================================================
+# МОДЕЛИ БД (СОКРАЩЕННАЯ ВЕРСИЯ)
 # ============================================================================
 Base = declarative_base()
 
@@ -57,11 +102,7 @@ class Chat(Base):
     chat_type = Column(String, default='group')
     added_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
-    custom_rules = Column(Text, nullable=True)  # Новое поле для кастомных правил
-    
-    messages = relationship('Message', back_populates='chat', cascade="all, delete")
-    moderators = relationship('Moderator', back_populates='chat', cascade="all, delete")
-    negative_messages = relationship('NegativeMessage', back_populates='chat', cascade="all, delete")
+    custom_rules = Column(Text, nullable=True)
 
 class Message(Base):
     __tablename__ = 'messages'
@@ -75,33 +116,6 @@ class Message(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime)
     ai_response = Column(Text)
-    
-    chat = relationship('Chat', back_populates='messages')
-
-class Moderator(Base):
-    __tablename__ = 'moderators'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    username = Column(String)
-    telegram_user_id = Column(BigInteger)
-    is_active = Column(Boolean, default=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
-    
-    chat = relationship('Chat', back_populates='moderators')
-
-class NegativeMessage(Base):
-    __tablename__ = 'negative_messages'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    message_link = Column(String)
-    sender_username = Column(String)
-    sender_id = Column(BigInteger)
-    negative_reason = Column(Text)
-    is_sent_to_moderators = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    agent_id = Column(Integer)
-    
-    chat = relationship('Chat', back_populates='negative_messages')
 
 # ============================================================================
 # ИНИЦИАЛИЗАЦИЯ БД И REDIS
@@ -121,45 +135,37 @@ def get_chat_rules(chat_id: int, db_session) -> list:
     try:
         chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
         if chat and chat.custom_rules:
-            # Если есть кастомные правила, используем их
             rules_list = [rule.strip() for rule in chat.custom_rules.split('\n') if rule.strip()]
             return rules_list
         else:
-            # Иначе используем стандартные
             return DEFAULT_RULES
     except Exception as e:
         logger.error(f"Ошибка получения правил для чата {chat_id}: {e}")
         return DEFAULT_RULES
 
-def save_chat_rules(chat_id: int, rules: list, db_session) -> bool:
-    """Сохраняет правила для конкретного чата"""
-    try:
-        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
-        if not chat:
-            chat = Chat(tg_chat_id=str(chat_id))
-            db_session.add(chat)
-            db_session.commit()
-        
-        # Сохраняем правила как текст, разделенный переносами строк
-        chat.custom_rules = '\n'.join(rules)
-        db_session.commit()
-        logger.info(f"Правила для чата {chat_id} обновлены: {len(rules)} правил")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка сохранения правил для чата {chat_id}: {e}")
-        return False
-
 # ============================================================================
-# АНАЛИЗ СООБЩЕНИЙ ЧЕРЕЗ MISTRAL AI
+# АНАЛИЗ С НОВЫМ MISTRAL AI API
 # ============================================================================
-def analyze_message_with_mistral(message: str, rules: list) -> dict:
-    """Детальный анализ сообщения через Mistral AI для определения следующего шага"""
+def analyze_message_with_mistral_new(message: str, rules: list) -> dict:
+    """Анализ сообщения через новый Mistral AI API"""
+    
+    if not MISTRAL_IMPORT_SUCCESS or not mistral_client:
+        logger.warning("⚠️ Mistral AI недоступен, используем заглушку")
+        return {
+            "severity": 5,
+            "strategy": "BOTH",
+            "priority": "MEDIUM", 
+            "reasoning": "Mistral AI недоступен, используем консервативную стратегию",
+            "rules_used": rules if rules else DEFAULT_RULES,
+            "ai_model": "fallback",
+            "status": "fallback"
+        }
+    
     try:
-        # Если правил нет, используем стандартные
         if not rules:
             rules = DEFAULT_RULES
         
-        rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
+        rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)]) 
         
         system_message = f"""Ты — анализатор сообщений для системы модерации Telegram чата.
         
@@ -183,21 +189,41 @@ def analyze_message_with_mistral(message: str, rules: list) -> dict:
 ПРИОРИТЕТ: [LOW/MEDIUM/HIGH]
 ОБЪЯСНЕНИЕ: [краткое обоснование решения]"""
         
-        user_message = f"Сообщение: \"{message}\""
+        user_message_text = f"Сообщение: \"{message}\""
         
-        messages = [
-            ChatMessage(role="system", content=system_message),
-            ChatMessage(role="user", content=user_message)
-        ]
+        # Создаем сообщения в новом формате
+        if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
+            # Новый API - используем объекты сообщений
+            messages = [
+                SystemMessage(content=system_message),
+                UserMessage(content=user_message_text)
+            ]
+        else:
+            # Старый API - используем словари
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message_text}
+            ]
         
-        response = mistral_client.chat(
-            model=MISTRAL_MODEL,
-            messages=messages,
-            temperature=MISTRAL_GENERATION_PARAMS["temperature"],
-            max_tokens=MISTRAL_GENERATION_PARAMS["max_tokens"]
-        )
-        
-        content = response.choices[0].message.content
+        # Вызываем API
+        if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
+            # Новый API
+            response = mistral_client.chat.complete(
+                model=MISTRAL_MODEL,
+                messages=messages,
+                temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
+                max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 300)
+            )
+            content = response.choices[0].message.content
+        else:
+            # Старый API
+            response = mistral_client.chat(
+                model=MISTRAL_MODEL,  
+                messages=messages,
+                temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
+                max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 300)
+            )
+            content = response.choices[0].message.content
         
         # Парсим ответ
         content_lower = content.lower()
@@ -208,7 +234,7 @@ def analyze_message_with_mistral(message: str, rules: list) -> dict:
                 severity_line = [line for line in content.split('\n') if 'серьезность:' in line.lower()][0]
                 severity = int(''.join(filter(str.isdigit, severity_line)))
             except:
-                severity = 5  # По умолчанию средняя серьезность
+                severity = 5
         else:
             severity = 5
         
@@ -220,7 +246,7 @@ def analyze_message_with_mistral(message: str, rules: list) -> dict:
         elif "both" in content_lower:
             strategy = "BOTH"
         else:
-            strategy = "BOTH"  # По умолчанию используем оба агента
+            strategy = "BOTH"
         
         # Определяем приоритет
         if "high" in content_lower:
@@ -237,12 +263,12 @@ def analyze_message_with_mistral(message: str, rules: list) -> dict:
             "reasoning": content,
             "rules_used": rules,
             "ai_model": MISTRAL_MODEL,
+            "import_version": MISTRAL_IMPORT_VERSION,
             "status": "success"
         }
         
     except Exception as e:
         logger.error(f"Ошибка Mistral AI анализа: {e}")
-        # При ошибке используем консервативный подход
         return {
             "severity": 7,
             "strategy": "BOTH",
@@ -250,6 +276,7 @@ def analyze_message_with_mistral(message: str, rules: list) -> dict:
             "reasoning": f"Ошибка анализа Mistral AI: {e}. Используем полный анализ.",
             "rules_used": rules if rules else DEFAULT_RULES,
             "ai_model": "error",
+            "import_version": MISTRAL_IMPORT_VERSION,
             "status": "error"
         }
 
@@ -258,8 +285,7 @@ def analyze_message_with_mistral(message: str, rules: list) -> dict:
 # ============================================================================
 def analysis_agent_2(input_data, db_session):
     """
-    АГЕНТ 2 — Анализатор и распределитель (Mistral AI).
-    Получает данные от Агента 1 и решает, какие агенты использовать для модерации.
+    АГЕНТ 2 — Анализатор и распределитель (Новый Mistral AI API)
     """
     message = input_data.get("message", "")
     rules = input_data.get("rules", [])
@@ -285,12 +311,12 @@ def analysis_agent_2(input_data, db_session):
             "status": "skipped"
         }
     
-    # Получаем правила для конкретного чата или используем стандартные
+    # Получаем правила для конкретного чата
     if not rules:
         rules = get_chat_rules(chat_id, db_session)
     
-    # Детальный анализ через Mistral AI
-    analysis = analyze_message_with_mistral(message, rules)
+    # Анализ через новый Mistral AI API
+    analysis = analyze_message_with_mistral_new(message, rules)
     
     # Подготавливаем данные для агентов 3 и 4
     moderation_data = {
@@ -305,24 +331,6 @@ def analysis_agent_2(input_data, db_session):
         "agent_2_analysis": analysis,
         "timestamp": datetime.now().isoformat()
     }
-    
-    # Сохраняем анализ в БД
-    try:
-        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
-        if chat:
-            # Обновляем AI response
-            message_obj = db_session.query(Message).filter_by(
-                chat_id=chat.id, 
-                message_id=message_id
-            ).first()
-            
-            if message_obj:
-                existing_response = message_obj.ai_response or ""
-                message_obj.ai_response = f"{existing_response}\n[АГЕНТ 2 - Mistral] {analysis['reasoning']}"
-                db_session.commit()
-                
-    except Exception as e:
-        logger.error(f"Ошибка обновления БД: {e}")
     
     output = {
         "agent_id": 2,
@@ -342,12 +350,13 @@ def analysis_agent_2(input_data, db_session):
         "send_to_agent_3": analysis["strategy"] in ["COMPLEX", "BOTH"],
         "send_to_agent_4": analysis["strategy"] in ["SIMPLE", "BOTH"],
         "ai_model": analysis["ai_model"],
+        "import_version": analysis.get("import_version", MISTRAL_IMPORT_VERSION),
         "status": analysis["status"],
         "timestamp": datetime.now().isoformat()
     }
     
     logger.info(f"📊 Стратегия: {analysis['strategy']}, Серьезность: {analysis['severity']}/10, Приоритет: {analysis['priority']}")
-    logger.info(f"📋 Правил используется: {len(analysis['rules_used'])}, Модель: {analysis.get('ai_model', 'Mistral')}")
+    logger.info(f"🔧 Импорт версия: {analysis.get('import_version', MISTRAL_IMPORT_VERSION)}")
     
     return output
 
@@ -418,11 +427,11 @@ class Agent2Worker:
     
     def run(self):
         """Главный цикл обработки сообщений"""
-        logger.info(f"✅ Агент 2 запущен (Mistral AI API, v2.4)")
+        logger.info(f"✅ Агент 2 запущен (Новый Mistral AI API v2.6)")
         logger.info(f"   Модель: {MISTRAL_MODEL}")
+        logger.info(f"   Импорт: {MISTRAL_IMPORT_VERSION}")
+        logger.info(f"   Статус Mistral AI: {'✅ Доступен' if mistral_client else '❌ Недоступен'}")
         logger.info(f"   Слушаю очередь: {QUEUE_AGENT_2_INPUT}")
-        logger.info(f"   Отправляю в Агента 3: {QUEUE_AGENT_3_INPUT}")
-        logger.info(f"   Отправляю в Агента 4: {QUEUE_AGENT_4_INPUT}")
         logger.info("   Нажмите Ctrl+C для остановки\n")
         
         db_session = None
@@ -436,11 +445,9 @@ class Agent2Worker:
                     queue_name, message_data = result
                     logger.info(f"📨 Получено сообщение")
                     
-                    # Создаем новую сессию БД для каждого сообщения
                     db_session = get_db_session()
                     output = self.process_message(message_data, db_session)
                     
-                    # Распределяем сообщение агентам
                     sent_count = self.distribute_to_agents(output)
                     
                     db_session.close()
@@ -464,9 +471,9 @@ class Agent2Worker:
 # FASTAPI ПРИЛОЖЕНИЕ
 # ============================================================================
 app = FastAPI(
-    title="🤖 Агент №2 - Анализатор (Mistral AI)",
-    description="Анализ и распределение сообщений между модераторами",
-    version="2.4"
+    title="🤖 Агент №2 - Анализатор (Новый Mistral AI)",
+    description="Анализ и распределение с новым Mistral AI API",
+    version="2.6"
 )
 
 app.add_middleware(
@@ -484,78 +491,18 @@ async def health_check():
         "status": "online",
         "agent_id": 2,
         "name": "Агент №2 (Анализатор)",
-        "version": "2.4 (Mistral AI)",
-        "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
-        "prompt_version": "v2.0 - кастомные правила",
+        "version": "2.6 (Новый Mistral AI API)",
+        "ai_provider": f"Mistral AI ({MISTRAL_MODEL})" if mistral_client else "Mistral AI (недоступен)",
+        "import_version": MISTRAL_IMPORT_VERSION,
+        "import_success": MISTRAL_IMPORT_SUCCESS,
+        "client_status": "✅ Создан" if mistral_client else "❌ Не создан",
+        "api_type": "Новый SDK v1.0+" if MISTRAL_IMPORT_VERSION.startswith("v1.0") else "Legacy v0.4.2",
         "configuration": "Environment variables (.env)",
         "default_rules": DEFAULT_RULES,
         "timestamp": datetime.now().isoformat(),
         "redis_queue": QUEUE_AGENT_2_INPUT,
         "uptime_seconds": int(time.time())
     }
-
-@app.post("/process_message")
-async def process_message_endpoint(message_data: dict):
-    """Обработка сообщения через API"""
-    db_session = get_db_session()
-    try:
-        result = analysis_agent_2(message_data, db_session)
-        return result
-    finally:
-        db_session.close()
-
-@app.get("/chat_rules/{chat_id}")
-async def get_chat_rules_endpoint(chat_id: int):
-    """Получить правила для конкретного чата"""
-    db_session = get_db_session()
-    try:
-        rules = get_chat_rules(chat_id, db_session)
-        return {
-            "chat_id": chat_id,
-            "rules": rules,
-            "is_default": rules == DEFAULT_RULES
-        }
-    finally:
-        db_session.close()
-
-@app.post("/chat_rules/{chat_id}")
-async def set_chat_rules_endpoint(chat_id: int, rules_data: dict):
-    """Установить правила для конкретного чата"""
-    db_session = get_db_session()
-    try:
-        rules = rules_data.get("rules", [])
-        success = save_chat_rules(chat_id, rules, db_session)
-        return {
-            "chat_id": chat_id,
-            "success": success,
-            "rules": rules,
-            "rules_count": len(rules)
-        }
-    finally:
-        db_session.close()
-
-@app.get("/stats")
-async def get_stats():
-    """Статистика работы агента"""
-    db_session = get_db_session()
-    try:
-        total_messages = db_session.query(Message).count()
-        negative_messages = db_session.query(NegativeMessage).count()
-        chats_with_custom_rules = db_session.query(Chat).filter(Chat.custom_rules.isnot(None)).count()
-        
-        return {
-            "total_messages": total_messages,
-            "negative_messages": negative_messages,
-            "chats_with_custom_rules": chats_with_custom_rules,
-            "agent_id": 2,
-            "version": "2.4 (Mistral AI)",
-            "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
-            "configuration": "Environment variables",
-            "default_rules": DEFAULT_RULES,
-            "timestamp": datetime.now().isoformat()
-        }
-    finally:
-        db_session.close()
 
 # ============================================================================
 # ЗАПУСК FASTAPI В ОТДЕЛЬНОМ ПОТОКЕ
@@ -576,7 +523,7 @@ if __name__ == "__main__":
             # Тестирование
             test_input = {
                 "message": "Все эти черные должны убираться отсюда!",
-                "rules": [],  # Тест без правил
+                "rules": [],
                 "user_id": 456,
                 "username": "test_user",
                 "chat_id": -200,
@@ -589,7 +536,6 @@ if __name__ == "__main__":
             db_session.close()
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif mode == "api":
-            # Запуск только FastAPI
             run_fastapi()
     else:
         # Запуск FastAPI в отдельном потоке

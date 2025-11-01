@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №5 — Арбитр многоагентной системы (Mistral AI версия)
+АГЕНТ №5 — Арбитр многоагентной системы (Mistral AI исправленная версия v0.4.2)
 """
 
 import json
@@ -11,9 +11,35 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
-import requests
-from mistralai.client import MistralClient
-from mistralai.models.chat_completion import ChatMessage
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+import threading
+
+# Mistral AI импорты - исправленная версия для 0.4.2
+try:
+    from mistralai.client import MistralClient
+    from mistralai.models.chat_completion import ChatMessage
+    MISTRAL_IMPORT_SUCCESS = True
+    MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
+except ImportError:
+    try:
+        # Fallback для новой версии
+        from mistralai import Mistral as MistralClient
+        from mistralai import UserMessage, SystemMessage
+        def ChatMessage(role, content): return {"role": role, "content": content}
+        MISTRAL_IMPORT_SUCCESS = True
+        MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
+    except ImportError:
+        print("❌ Не удалось импортировать Mistral AI")
+        MISTRAL_IMPORT_SUCCESS = False
+        MISTRAL_IMPORT_VERSION = "none"
+        # Заглушки
+        class MistralClient:
+            def __init__(self, api_key): pass
+            def chat(self, **kwargs): 
+                raise ImportError("Mistral AI не установлен")
+        def ChatMessage(role, content): return {"role": role, "content": content}
 
 # Импортируем централизованную конфигурацию
 from config import (
@@ -34,10 +60,25 @@ from config import (
 # ============================================================================
 logger = setup_logging("АГЕНТ 5")
 
+# Проверяем импорты при запуске
+if MISTRAL_IMPORT_SUCCESS:
+    logger.info(f"✅ Mistral AI импортирован успешно ({MISTRAL_IMPORT_VERSION})")
+else:
+    logger.error("❌ Mistral AI не импортирован, работа в режиме заглушки")
+
 # ============================================================================
 # ИНИЦИАЛИЗАЦИЯ MISTRAL AI
 # ============================================================================
-mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
+if MISTRAL_IMPORT_SUCCESS and MISTRAL_API_KEY:
+    try:
+        mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
+        logger.info("✅ Mistral AI клиент создан")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания Mistral AI клиента: {e}")
+        mistral_client = None
+else:
+    mistral_client = None
+    logger.warning("⚠️ Mistral AI клиент не создан")
 
 # ============================================================================
 # КЛАССЫ ДАННЫХ ДЛЯ АРБИТРАЖА
@@ -75,11 +116,11 @@ class Agent5Decision:
     timestamp: datetime
 
 # ============================================================================
-# АРБИТРАЖНАЯ ЛОГИКА С MISTRAL AI (ОБНОВЛЕННЫЙ ПРОМПТ)
+# АРБИТРАЖНАЯ ЛОГИКА С MISTRAL AI (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 # ============================================================================
 class ModerationArbiter:
     """
-    Арбитр для разрешения конфликтов между агентами 3 и 4 с использованием Mistral AI
+    Арбитр для разрешения конфликтов между агентами 3 и 4 с использованием Mistral AI (исправленная версия)
     """
     
     def __init__(self):
@@ -93,8 +134,13 @@ class ModerationArbiter:
         return verdicts_differ or low_confidence
     
     def resolve_conflict_with_mistral(self, agent3: AgentVerdict, agent4: AgentVerdict, message_text: str, rules: list) -> tuple:
-        """Разрешение конфликта между агентами с помощью Mistral AI (обновленный промпт)"""
+        """Разрешение конфликта между агентами с помощью Mistral AI (исправленная версия)"""
         logger.info("🤖 Разрешение конфликта с помощью Mistral AI...")
+        
+        # Проверяем доступность Mistral AI
+        if not MISTRAL_IMPORT_SUCCESS or not mistral_client:
+            logger.warning("⚠️ Mistral AI недоступен, используем заглушку")
+            return self.resolve_conflict_fallback(agent3, agent4, message_text)
         
         try:
             # Если правил нет, используем стандартные
@@ -137,14 +183,14 @@ class ModerationArbiter:
             response = mistral_client.chat(
                 model=MISTRAL_MODEL,
                 messages=messages,
-                temperature=MISTRAL_GENERATION_PARAMS["temperature"],
-                max_tokens=MISTRAL_GENERATION_PARAMS["max_tokens"],
-                top_p=MISTRAL_GENERATION_PARAMS["top_p"]
+                temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
+                max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 300),
+                top_p=MISTRAL_GENERATION_PARAMS.get("top_p", 0.9)
             )
             
             content = response.choices[0].message.content
             
-            # Парсим ответ в новом формате
+            # Парсим ответ в новом формате v2.0
             content_lower = content.lower()
             
             # Ищем вердикт
@@ -178,7 +224,7 @@ class ModerationArbiter:
                     except:
                         pass
             
-            reasoning = f"Mistral AI арбитр: {content}"
+            reasoning = f"Mistral AI арбитр ({MISTRAL_IMPORT_VERSION}): {content}"
             
             logger.info(f"🤖 Mistral AI принял решение: {verdict.value} (уверенность: {confidence:.2f})")
             return verdict, confidence, reasoning
@@ -264,7 +310,7 @@ class ModerationArbiter:
             )
             logger.info("✅ Конфликта нет, принимаем согласованное решение")
         else:
-            # Есть конфликт - используем Mistral AI арбитр с новым промптом
+            # Есть конфликт - используем Mistral AI арбитр
             logger.warning("⚠️ Обнаружен конфликт между агентами!")
             rules = agent3_data.get("rules", []) or agent4_data.get("rules", [])
             final_verdict, confidence, reasoning = self.resolve_conflict_with_mistral(
@@ -313,6 +359,7 @@ def send_notification_to_moderators(decision: Agent5Decision) -> bool:
             f"🤖 <b>Agent3:</b> {decision.agent3_verdict.value}, <b>Agent4:</b> {decision.agent4_verdict.value}\n"
             f"⚡ <b>Конфликт:</b> {'Да' if decision.was_conflict else 'Нет'}\n"
             f"🧠 <b>ИИ провайдер:</b> Mistral AI ({MISTRAL_MODEL})\n"
+            f"🔧 <b>Импорт:</b> {MISTRAL_IMPORT_VERSION}\n"
             f"⚙️ <b>Конфигурация:</b> Environment variables (.env)\n"
             f"🕐 <b>Время:</b> {decision.timestamp.strftime('%H:%M:%S')}"
         )
@@ -332,7 +379,7 @@ def send_notification_to_moderators(decision: Agent5Decision) -> bool:
 # ============================================================================
 def moderation_agent_5(agent3_data: Dict[str, Any], agent4_data: Dict[str, Any]):
     """
-    АГЕНТ 5 — Арбитр принимает окончательное решение с Mistral AI (обновленный промпт)
+    АГЕНТ 5 — Арбитр принимает окончательное решение с Mistral AI (исправленная версия v5.5)
     """
     arbiter = ModerationArbiter()
     
@@ -359,6 +406,7 @@ def moderation_agent_5(agent3_data: Dict[str, Any], agent4_data: Dict[str, Any])
         "was_conflict": decision.was_conflict,
         "notification_sent": notification_sent,
         "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
+        "import_version": MISTRAL_IMPORT_VERSION,
         "prompt_version": "v2.0 - обновленный формат",
         "configuration": "Environment variables (.env)",
         "status": "success",
@@ -436,11 +484,12 @@ class Agent5Worker:
     
     def run(self):
         """Главный цикл обработки результатов агентов"""
-        logger.info(f"✅ Агент 5 запущен (Mistral AI арбитр v5.4)")
+        logger.info(f"✅ Агент 5 запущен (Mistral AI арбитр исправленный v5.5)")
         logger.info(f"   Модель: {MISTRAL_MODEL}")
+        logger.info(f"   Импорт: {MISTRAL_IMPORT_VERSION}")
+        logger.info(f"   Статус Mistral AI: {'✅ Доступен' if mistral_client else '❌ Недоступен'}")
         logger.info(f"   Слушаю очередь: {QUEUE_AGENT_5_INPUT}")
         logger.info(f"   Стандартные правила v2.0: {DEFAULT_RULES}")
-        logger.info(f"   ИИ провайдер: Mistral AI")
         logger.info("   Нажмите Ctrl+C для остановки\n")
         
         try:
@@ -467,45 +516,48 @@ class Agent5Worker:
             logger.info("Агент 5 завершил работу")
 
 # ============================================================================
-# HEALTH CHECK ENDPOINT
+# FASTAPI ПРИЛОЖЕНИЕ
 # ============================================================================
-def create_health_check_server():
-    """Создает простой HTTP сервер для проверки здоровья агента"""
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    import threading
-    
-    class HealthCheckHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == '/health':
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                health_info = {
-                    "status": "online",
-                    "agent_id": 5,
-                    "name": "Агент №5 (Арбитр Mistral AI)",
-                    "version": "5.4 (Mistral)",
-                    "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
-                    "prompt_version": "v2.0 - обновленный формат",
-                    "configuration": "Environment variables (.env)",
-                    "default_rules": DEFAULT_RULES,
-                    "timestamp": datetime.now().isoformat(),
-                    "redis_queue": QUEUE_AGENT_5_INPUT,
-                    "uptime_seconds": int(time.time())
-                }
-                self.wfile.write(json.dumps(health_info, ensure_ascii=False).encode())
-            else:
-                self.send_response(404)
-                self.end_headers()
-        
-        def log_message(self, format, *args):
-            # Подавляем логирование HTTP запросов
-            pass
-    
-    server = HTTPServer(('localhost', AGENT_PORTS[5]), HealthCheckHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    logger.info(f"✅ Health check сервер запущен на порту {AGENT_PORTS[5]}")
+app = FastAPI(
+    title="🤖 Агент №5 - Арбитр (Mistral AI исправленный)",
+    description="Арбитражное решение конфликтов между агентами",
+    version="5.5"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "online",
+        "agent_id": 5,
+        "name": "Агент №5 (Арбитр)",
+        "version": "5.5 (Mistral AI исправленный)",
+        "ai_provider": f"Mistral AI ({MISTRAL_MODEL})" if mistral_client else "Mistral AI (недоступен)",
+        "import_version": MISTRAL_IMPORT_VERSION,
+        "import_success": MISTRAL_IMPORT_SUCCESS,
+        "client_status": "✅ Создан" if mistral_client else "❌ Не создан",
+        "prompt_version": "v2.0 - обновленный формат",
+        "configuration": "Environment variables (.env)",
+        "default_rules": DEFAULT_RULES,
+        "timestamp": datetime.now().isoformat(),
+        "redis_queue": QUEUE_AGENT_5_INPUT,
+        "uptime_seconds": int(time.time())
+    }
+
+# ============================================================================
+# ЗАПУСК FASTAPI В ОТДЕЛЬНОМ ПОТОКЕ
+# ============================================================================
+def run_fastapi():
+    """Запуск FastAPI сервера"""
+    uvicorn.run(app, host="localhost", port=AGENT_PORTS[5], log_level="info")
 
 # ============================================================================
 # ТОЧКА ВХОДА
@@ -545,10 +597,17 @@ if __name__ == "__main__":
             
             result = moderation_agent_5(agent3_data, agent4_data)
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif mode == "api":
+            # Запуск только FastAPI
+            run_fastapi()
     else:
-        # Запуск основного цикла обработки
+        # Запуск FastAPI в отдельном потоке
+        fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
+        fastapi_thread.start()
+        logger.info(f"✅ FastAPI сервер запущен на порту {AGENT_PORTS[5]}")
+        
+        # Запуск основного Redis worker
         try:
-            create_health_check_server()
             worker = Agent5Worker()
             worker.run()
         except KeyboardInterrupt:

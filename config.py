@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TeleGuard - Централизованная конфигурация через переменные окружения (Mistral AI версия)
+TeleGuard - Универсальная конфигурация (поддержка OpenAI + Mistral AI)
 """
 
 import os
@@ -28,14 +28,42 @@ def get_env_int(key: str, default: int = 0) -> int:
         return default
 
 # ============================================================================
-# MISTRAL AI CONFIGURATION
+# AI PROVIDER DETECTION (АВТООПРЕДЕЛЕНИЕ)
 # ============================================================================
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
-MISTRAL_MODEL = os.getenv('MISTRAL_MODEL', 'mistral-large-latest')
-AI_PROVIDER = os.getenv('AI_PROVIDER', 'mistral')
+AI_PROVIDER = os.getenv('AI_PROVIDER', 'auto').lower()
 
-if not MISTRAL_API_KEY:
+# Автоматическое определение провайдера
+if AI_PROVIDER == 'auto':
+    if OPENAI_API_KEY:
+        AI_PROVIDER = 'openai'
+        logger_msg = "🤖 Автоопределение: найден OPENAI_API_KEY, используем OpenAI"
+    elif MISTRAL_API_KEY:
+        AI_PROVIDER = 'mistral'
+        logger_msg = "🤖 Автоопределение: найден MISTRAL_API_KEY, используем Mistral AI"
+    else:
+        raise ValueError("❌ Не найдены API ключи! Добавьте OPENAI_API_KEY или MISTRAL_API_KEY в .env файл")
+else:
+    logger_msg = f"🤖 Ручная настройка: AI_PROVIDER={AI_PROVIDER}"
+
+# Проверяем, что есть нужный ключ
+if AI_PROVIDER == 'openai' and not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY не найден в переменных окружения! Проверьте .env файл")
+elif AI_PROVIDER == 'mistral' and not MISTRAL_API_KEY:
     raise ValueError("MISTRAL_API_KEY не найден в переменных окружения! Проверьте .env файл")
+
+# ============================================================================
+# МОДЕЛИ И ПАРАМЕТРЫ
+# ============================================================================
+if AI_PROVIDER == 'openai':
+    DEFAULT_MODEL = 'gpt-3.5-turbo'
+    API_KEY = OPENAI_API_KEY
+    CURRENT_MODEL = os.getenv('OPENAI_MODEL', DEFAULT_MODEL)
+elif AI_PROVIDER == 'mistral':
+    DEFAULT_MODEL = 'mistral-large-latest'
+    API_KEY = MISTRAL_API_KEY
+    CURRENT_MODEL = os.getenv('MISTRAL_MODEL', DEFAULT_MODEL)
 
 # ============================================================================
 # TELEGRAM BOT CONFIGURATION
@@ -101,7 +129,9 @@ QUEUE_AGENT_5_INPUT = "queue:agent5:input"
 # ============================================================================
 DEFAULT_RULES = [
     "Запрещена расовая дискриминация",
-    "Запрещены ссылки"
+    "Запрещены ссылки",
+    "Запрещена нецензурная лексика и оскорбления",  # ← НОВОЕ ПРАВИЛО
+    "Запрещены угрозы и призывы к насилию"          # ← НОВОЕ ПРАВИЛО
 ]
 
 # ============================================================================
@@ -110,31 +140,47 @@ DEFAULT_RULES = [
 AGENT_PORTS = {
     1: 8001,  # Координатор
     2: 8002,  # Анализатор
-    3: 8003,  # Mistral модератор
-    4: 8004,  # Эвристический + Mistral
+    3: 8003,  # Модератор ИИ
+    4: 8004,  # Эвристический + ИИ
     5: 8005   # Арбитр
 }
 
 # ============================================================================
-# MISTRAL AI SPECIFIC CONFIGURATION
+# AI SPECIFIC CONFIGURATION
 # ============================================================================
-MISTRAL_API_BASE = "https://api.mistral.ai/v1"
-MISTRAL_SUPPORTED_MODELS = [
-    "mistral-large-latest",
-    "mistral-medium-latest", 
-    "mistral-small-latest",
-    "open-mistral-7b",
-    "open-mistral-8x7b",
-    "open-mistral-8x22b"
-]
-
-# Параметры генерации для Mistral
-MISTRAL_GENERATION_PARAMS = {
-    "temperature": 0.1,
-    "max_tokens": 300,
-    "top_p": 0.9,
-    "safe_mode": False  # Отключаем safe mode для модерации
-}
+if AI_PROVIDER == 'openai':
+    # OpenAI Configuration
+    OPENAI_MODEL = CURRENT_MODEL
+    OPENAI_GENERATION_PARAMS = {
+        "temperature": 0.1,
+        "max_tokens": 300
+    }
+    
+    # Экспорт для совместимости
+    OPENAI_API_KEY = API_KEY
+    
+elif AI_PROVIDER == 'mistral':
+    # Mistral AI Configuration
+    MISTRAL_MODEL = CURRENT_MODEL
+    MISTRAL_API_BASE = "https://api.mistral.ai/v1"
+    MISTRAL_SUPPORTED_MODELS = [
+        "mistral-large-latest",
+        "mistral-medium-latest", 
+        "mistral-small-latest",
+        "open-mistral-7b",
+        "open-mistral-8x7b",
+        "open-mistral-8x22b"
+    ]
+    
+    MISTRAL_GENERATION_PARAMS = {
+        "temperature": 0.1,
+        "max_tokens": 300,
+        "top_p": 0.9,
+        "safe_mode": False
+    }
+    
+    # Экспорт для совместимости
+    MISTRAL_API_KEY = API_KEY
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -152,6 +198,7 @@ def setup_logging(agent_name: str = "SYSTEM"):
     # Подавляем избыточные логи от внешних библиотек
     if not DEBUG:
         logging.getLogger('httpx').setLevel(logging.WARNING)
+        logging.getLogger('openai').setLevel(logging.WARNING)
         logging.getLogger('mistralai').setLevel(logging.WARNING)
         logging.getLogger('requests').setLevel(logging.WARNING)
         logging.getLogger('urllib3').setLevel(logging.WARNING)
@@ -165,26 +212,28 @@ def validate_config():
     """Проверка корректности конфигурации"""
     errors = []
     
-    # Проверяем обязательные переменные
-    if not MISTRAL_API_KEY:
-        errors.append("MISTRAL_API_KEY обязателен")
+    # Проверяем API ключи
+    if AI_PROVIDER == 'openai':
+        if not OPENAI_API_KEY:
+            errors.append("OPENAI_API_KEY обязателен для OpenAI провайдера")
+        elif len(OPENAI_API_KEY) < 20:
+            errors.append("OPENAI_API_KEY кажется слишком коротким")
     
+    elif AI_PROVIDER == 'mistral':
+        if not MISTRAL_API_KEY:
+            errors.append("MISTRAL_API_KEY обязателен для Mistral AI провайдера")
+        elif len(MISTRAL_API_KEY) < 20:
+            errors.append("MISTRAL_API_KEY кажется слишком коротким")
+    
+    # Проверяем Telegram токен
     if not TELEGRAM_BOT_TOKEN:
         errors.append("TELEGRAM_BOT_TOKEN обязателен")
-    
-    if not POSTGRES_URL:
-        errors.append("POSTGRES_URL обязателен")
-    
-    # Проверяем формат токенов
-    if MISTRAL_API_KEY and len(MISTRAL_API_KEY) < 20:
-        errors.append("MISTRAL_API_KEY кажется слишком коротким")
-    
-    if TELEGRAM_BOT_TOKEN and ':' not in TELEGRAM_BOT_TOKEN:
+    elif ':' not in TELEGRAM_BOT_TOKEN:
         errors.append("TELEGRAM_BOT_TOKEN имеет неверный формат")
     
-    # Проверяем модель Mistral
-    if MISTRAL_MODEL not in MISTRAL_SUPPORTED_MODELS:
-        errors.append(f"MISTRAL_MODEL '{MISTRAL_MODEL}' не поддерживается. Доступные: {MISTRAL_SUPPORTED_MODELS}")
+    # Проверяем PostgreSQL
+    if not POSTGRES_URL:
+        errors.append("POSTGRES_URL обязателен")
     
     # Проверяем порты
     if not (1 <= REDIS_PORT <= 65535):
@@ -212,16 +261,25 @@ def get_redis_config():
     }
 
 # ============================================================================
-# MISTRAL CLIENT CONFIG
+# AI CLIENT CONFIG
 # ============================================================================
-def get_mistral_config():
-    """Получить конфигурацию для Mistral AI клиента"""
-    return {
-        "api_key": MISTRAL_API_KEY,
-        "endpoint": MISTRAL_API_BASE,
-        "model": MISTRAL_MODEL,
-        "generation_params": MISTRAL_GENERATION_PARAMS
-    }
+def get_ai_config():
+    """Получить конфигурацию для ИИ клиента"""
+    if AI_PROVIDER == 'openai':
+        return {
+            "provider": "openai",
+            "api_key": OPENAI_API_KEY,
+            "model": OPENAI_MODEL,
+            "generation_params": OPENAI_GENERATION_PARAMS
+        }
+    elif AI_PROVIDER == 'mistral':
+        return {
+            "provider": "mistral",
+            "api_key": MISTRAL_API_KEY,
+            "endpoint": MISTRAL_API_BASE,
+            "model": MISTRAL_MODEL,
+            "generation_params": MISTRAL_GENERATION_PARAMS
+        }
 
 # ============================================================================
 # ЭКСПОРТ КОНФИГУРАЦИИ
@@ -230,8 +288,8 @@ def get_config_summary():
     """Получить сводку конфигурации (без секретных данных)"""
     return {
         "ai_provider": AI_PROVIDER,
-        "mistral_configured": bool(MISTRAL_API_KEY),
-        "mistral_model": MISTRAL_MODEL,
+        "ai_model": CURRENT_MODEL,
+        "ai_configured": bool(API_KEY),
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN),
         "postgres_host": POSTGRES_HOST,
         "postgres_port": POSTGRES_PORT,
@@ -258,7 +316,8 @@ except ValueError as e:
 
 # Настраиваем базовое логирование
 logger = setup_logging("CONFIG")
-logger.info("✅ Конфигурация Mistral AI загружена успешно")
+logger.info(f"✅ Конфигурация загружена: {AI_PROVIDER.upper()} ({CURRENT_MODEL})")
+print(logger_msg)  # Печатаем сообщение об автоопределении
 
 if DEBUG:
     logger.debug("🔧 Режим отладки включен")
@@ -268,12 +327,21 @@ if DEBUG:
 # ЭКСПОРТИРУЕМЫЕ ПЕРЕМЕННЫЕ
 # ============================================================================
 __all__ = [
-    # AI API Keys
+    # AI API Keys (universal)
+    'AI_PROVIDER',
+    'API_KEY',
+    'CURRENT_MODEL',
+    
+    # OpenAI (if used)
+    'OPENAI_API_KEY',
+    'OPENAI_MODEL',
+    'OPENAI_GENERATION_PARAMS',
+    
+    # Mistral AI (if used)
     'MISTRAL_API_KEY',
     'MISTRAL_MODEL',
     'MISTRAL_API_BASE',
     'MISTRAL_GENERATION_PARAMS',
-    'AI_PROVIDER',
     
     # Telegram
     'TELEGRAM_BOT_TOKEN',
@@ -313,6 +381,23 @@ __all__ = [
     'setup_logging',
     'validate_config',
     'get_redis_config',
-    'get_mistral_config',
+    'get_ai_config',
     'get_config_summary'
 ]
+
+# Проверяем при запуске как скрипт
+if __name__ == "__main__":
+    print("\n🤖 TeleGuard - Универсальная конфигурация")
+    print("=" * 50)
+    print(f"🧠 ИИ провайдер: {AI_PROVIDER.upper()}")
+    print(f"🔧 Модель: {CURRENT_MODEL}")
+    print(f"🔑 API ключ: {'✅ Найден' if API_KEY else '❌ Отсутствует'}")
+    print(f"📱 Telegram токен: {'✅ Найден' if TELEGRAM_BOT_TOKEN else '❌ Отсутствует'}")
+    print(f"🗄️ PostgreSQL: {'✅ Настроен' if POSTGRES_URL else '❌ Не настроен'}")
+    print(f"📡 Redis: {REDIS_HOST}:{REDIS_PORT}")
+    print(f"🕐 Часовой пояс: {TIMEZONE_NAME}")
+    print(f"🔧 Режим отладки: {'✅ Включен' if DEBUG else '❌ Выключен'}")
+    print("\n✅ Конфигурация валидна!")
+    
+    summary = get_config_summary()
+    print(f"\n📊 Сводка: {summary}")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №1 — Координатор системы (Mistral AI версия с конфигурацией из .env)
+АГЕНТ №1 — Координатор с Mistral AI анализом (исправленная версия v0.4.2)
 """
 
 import json
@@ -16,8 +16,36 @@ import threading
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, BigInteger, Text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
+# Mistral AI импорты - исправленная версия для 0.4.2
+try:
+    from mistralai.client import MistralClient
+    from mistralai.models.chat_completion import ChatMessage
+    MISTRAL_IMPORT_SUCCESS = True
+    MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
+except ImportError:
+    try:
+        # Fallback для новой версии
+        from mistralai import Mistral as MistralClient
+        from mistralai import UserMessage, SystemMessage
+        def ChatMessage(role, content): return {"role": role, "content": content}
+        MISTRAL_IMPORT_SUCCESS = True
+        MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
+    except ImportError:
+        print("❌ Не удалось импортировать Mistral AI")
+        MISTRAL_IMPORT_SUCCESS = False
+        MISTRAL_IMPORT_VERSION = "none"
+        # Заглушки
+        class MistralClient:
+            def __init__(self, api_key): pass
+            def chat(self, **kwargs): 
+                raise ImportError("Mistral AI не установлен")
+        def ChatMessage(role, content): return {"role": role, "content": content}
+
 # Импортируем централизованную конфигурацию
 from config import (
+    MISTRAL_API_KEY,
+    MISTRAL_MODEL,
+    MISTRAL_GENERATION_PARAMS,
     POSTGRES_URL, 
     get_redis_config,
     QUEUE_AGENT_1_INPUT,
@@ -32,6 +60,26 @@ from config import (
 # ============================================================================
 logger = setup_logging("АГЕНТ 1")
 
+# Проверяем импорты при запуске
+if MISTRAL_IMPORT_SUCCESS:
+    logger.info(f"✅ Mistral AI импортирован успешно ({MISTRAL_IMPORT_VERSION})")
+else:
+    logger.error("❌ Mistral AI не импортирован, работа в режиме заглушки")
+
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ MISTRAL AI
+# ============================================================================
+if MISTRAL_IMPORT_SUCCESS and MISTRAL_API_KEY:
+    try:
+        mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
+        logger.info("✅ Mistral AI клиент создан")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания Mistral AI клиента: {e}")
+        mistral_client = None
+else:
+    mistral_client = None
+    logger.warning("⚠️ Mistral AI клиент не создан")
+
 # ============================================================================
 # МОДЕЛИ БД (ЕДИНЫЕ ДЛЯ ВСЕХ АГЕНТОВ)
 # ============================================================================
@@ -45,7 +93,7 @@ class Chat(Base):
     chat_type = Column(String, default='group')
     added_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
-    custom_rules = Column(Text, nullable=True)  # Новое поле для кастомных правил
+    custom_rules = Column(Text, nullable=True)  # Поле для кастомных правил
     
     messages = relationship('Message', back_populates='chat', cascade="all, delete")
     moderators = relationship('Moderator', back_populates='chat', cascade="all, delete")
@@ -206,8 +254,8 @@ def normalize_message_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
             "message_analysis": message_analysis,
             "complexity_score": complexity_score,
             "suggested_strategy": suggested_strategy,
-            "processor": "Агент №1 (Координатор)",
-            "version": "1.4 (Mistral AI .env)",
+            "processor": "Агент №1 (Координатор с Mistral AI)",
+            "version": "1.5 (Mistral AI координатор)",
             "processed_at": datetime.now().isoformat()
         }
     })
@@ -215,12 +263,122 @@ def normalize_message_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 # ============================================================================
-# ОСНОВНАЯ ЛОГИКА АГЕНТА 1
+# КООРДИНАЦИЯ С MISTRAL AI (НОВАЯ ФУНКЦИЯ)
+# ============================================================================
+def coordinate_with_mistral(message: str, preliminary_analysis: dict) -> dict:
+    """
+    Дополнительная координация с Mistral AI для точного определения стратегии обработки
+    """
+    
+    # Проверяем доступность Mistral AI
+    if not MISTRAL_IMPORT_SUCCESS or not mistral_client:
+        logger.warning("⚠️ Mistral AI недоступен, используем предварительный анализ")
+        return {
+            "final_strategy": preliminary_analysis["suggested_strategy"],
+            "ai_confidence": 0.0,
+            "ai_reasoning": "Mistral AI недоступен, используем эвристический анализ",
+            "method": "fallback"
+        }
+    
+    try:
+        system_message = f"""Ты — координатор системы модерации Telegram чата. Твоя задача — получить сообщение и определить оптимальную стратегию его обработки.
+
+ДОСТУПНЫЕ СТРАТЕГИИ:
+1. SIMPLE - простые сообщения, достаточно эвристического анализа (быстро)
+2. COMPLEX - сложные случаи, нужен полный ИИ анализ (медленно, но точно)
+3. BOTH - неоднозначные случаи, нужны оба типа анализа (максимальная точность)
+
+ПРЕДВАРИТЕЛЬНЫЙ АНАЛИЗ:
+- Длина: {preliminary_analysis['message_analysis']['length']} символов
+- Слов: {preliminary_analysis['message_analysis']['word_count']}
+- Есть ссылки: {preliminary_analysis['message_analysis']['has_links']}
+- Есть упоминания: {preliminary_analysis['message_analysis']['has_mentions']}
+- Доля заглавных: {preliminary_analysis['message_analysis']['caps_ratio']:.2f}
+- Предварительная стратегия: {preliminary_analysis['suggested_strategy']}
+
+ПРАВИЛА ВЫБОРА:
+- SIMPLE: обычные сообщения без подозрительных элементов
+- COMPLEX: потенциально проблемные сообщения требующие детального анализа  
+- BOTH: сомнительные случаи где нужна максимальная точность
+
+Формат ответа:
+СТРАТЕГИЯ: [SIMPLE/COMPLEX/BOTH]
+УВЕРЕННОСТЬ: [0-100]%
+ПРИЧИНА: [краткое обоснование выбора стратегии]"""
+        
+        user_message = f"Сообщение для анализа: \"{message}\""
+        
+        messages = [
+            ChatMessage(role="system", content=system_message),
+            ChatMessage(role="user", content=user_message)
+        ]
+        
+        response = mistral_client.chat(
+            model=MISTRAL_MODEL,
+            messages=messages,
+            temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
+            max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 200),
+            top_p=MISTRAL_GENERATION_PARAMS.get("top_p", 0.9)
+        )
+        
+        content = response.choices[0].message.content
+        content_lower = content.lower()
+        
+        # Парсим стратегию
+        if "стратегия:" in content_lower:
+            strategy_line = [line for line in content.split('\n') if 'стратегия:' in line.lower()]
+            if strategy_line:
+                strategy_text = strategy_line[0].lower()
+                if "simple" in strategy_text:
+                    final_strategy = "SIMPLE"
+                elif "complex" in strategy_text:
+                    final_strategy = "COMPLEX"
+                elif "both" in strategy_text:
+                    final_strategy = "BOTH"
+                else:
+                    final_strategy = preliminary_analysis["suggested_strategy"]
+            else:
+                final_strategy = preliminary_analysis["suggested_strategy"]
+        else:
+            final_strategy = preliminary_analysis["suggested_strategy"]
+        
+        # Парсим уверенность
+        ai_confidence = 0.75  # По умолчанию
+        if "уверенность:" in content_lower:
+            confidence_line = [line for line in content.split('\n') if 'уверенность:' in line.lower()]
+            if confidence_line:
+                try:
+                    import re
+                    numbers = re.findall(r'\d+', confidence_line[0])
+                    if numbers:
+                        ai_confidence = int(numbers[0]) / 100.0
+                        ai_confidence = min(1.0, max(0.0, ai_confidence))
+                except:
+                    ai_confidence = 0.75
+        
+        return {
+            "final_strategy": final_strategy,
+            "ai_confidence": ai_confidence,
+            "ai_reasoning": content,
+            "method": f"Mistral AI координатор ({MISTRAL_IMPORT_VERSION})"
+        }
+        
+    except Exception as e:
+        logger.error(f"Ошибка Mistral AI координации: {e}")
+        return {
+            "final_strategy": preliminary_analysis["suggested_strategy"],
+            "ai_confidence": 0.0,
+            "ai_reasoning": f"Ошибка ИИ координации: {e}. Используем предварительный анализ.",
+            "method": "error fallback"
+        }
+
+# ============================================================================
+# ОСНОВНАЯ ЛОГИКА АГЕНТА 1 С MISTRAL AI
 # ============================================================================
 def coordination_agent_1(input_data, db_session):
     """
-    АГЕНТ 1 — Координатор системы.
-    Получает сырые данные, фильтрует, нормализует и отправляет в Агент 2.
+    АГЕНТ 1 — Координатор системы с Mistral AI анализом (v1.5).
+    Получает сырые данные, фильтрует, нормализует и координирует через ИИ.
     """
     logger.info(f"Получено сообщение от пользователя: {input_data.get('username', 'unknown')}")
     
@@ -241,8 +399,23 @@ def coordination_agent_1(input_data, db_session):
             "status": "skipped"
         }
     
-    # Нормализуем данные
+    # Нормализуем данные и делаем предварительный анализ
     normalized_data = normalize_message_data(input_data)
+    
+    # Координируем с Mistral AI для точного определения стратегии
+    ai_coordination = coordinate_with_mistral(
+        normalized_data["message"], 
+        normalized_data["agent_1_analysis"]
+    )
+    
+    # Обновляем анализ с результатами ИИ координации
+    normalized_data["agent_1_analysis"].update({
+        "ai_coordination": ai_coordination,
+        "final_strategy": ai_coordination["final_strategy"],
+        "ai_confidence": ai_coordination["ai_confidence"],
+        "ai_reasoning": ai_coordination["ai_reasoning"],
+        "coordination_method": ai_coordination["method"]
+    })
     
     # Сохраняем базовую информацию в БД
     try:
@@ -274,7 +447,7 @@ def coordination_agent_1(input_data, db_session):
                 sender_id=normalized_data["user_id"],
                 message_text=normalized_data["message"],
                 message_link=normalized_data["message_link"],
-                ai_response="[АГЕНТ 1] Сообщение принято к обработке"
+                ai_response=f"[АГЕНТ 1 - Mistral AI] {ai_coordination['ai_reasoning']}"
             )
             db_session.add(message_obj)
             db_session.commit()
@@ -294,14 +467,20 @@ def coordination_agent_1(input_data, db_session):
         "message_id": normalized_data["message_id"],
         "message_link": normalized_data["message_link"],
         "agent_1_analysis": normalized_data["agent_1_analysis"],
+        "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
+        "import_version": MISTRAL_IMPORT_VERSION,
         "status": "processed",
         "next_agent": 2,
         "timestamp": normalized_data["timestamp"]
     }
     
     analysis = normalized_data["agent_1_analysis"]
+    ai_coord = analysis["ai_coordination"]
+    
     logger.info(f"📊 Анализ: длина={analysis['message_analysis']['length']}, "
-               f"сложность={analysis['complexity_score']}, стратегия={analysis['suggested_strategy']}")
+               f"предв.стратегия={analysis['suggested_strategy']}")
+    logger.info(f"🤖 ИИ координация: финальная стратегия={ai_coord['final_strategy']}, "
+               f"уверенность={ai_coord['ai_confidence']:.2f}, метод={ai_coord['method']}")
     
     return output
 
@@ -359,11 +538,13 @@ class Agent1Worker:
     
     def run(self):
         """Главный цикл обработки сообщений"""
-        logger.info(f"✅ Агент 1 запущен (Координатор v1.4 с Mistral AI)")
+        logger.info(f"✅ Агент 1 запущен (Координатор с Mistral AI v1.5)")
         logger.info(f"   Слушаю очередь: {QUEUE_AGENT_1_INPUT}")
         logger.info(f"   Отправляю в Агента 2: {QUEUE_AGENT_2_INPUT}")
+        logger.info(f"   Модель: {MISTRAL_MODEL}")
+        logger.info(f"   Импорт: {MISTRAL_IMPORT_VERSION}")
+        logger.info(f"   Статус Mistral AI: {'✅ Доступен' if mistral_client else '❌ Недоступен'}")
         logger.info(f"   Стандартные правила v2.0: {DEFAULT_RULES}")
-        logger.info(f"   ИИ провайдер: Mistral AI (через Агент 2)")
         logger.info("   Нажмите Ctrl+C для остановки\n")
         
         db_session = None
@@ -406,8 +587,8 @@ class Agent1Worker:
 # ============================================================================
 app = FastAPI(
     title="🤖 Агент №1 - Координатор (Mistral AI)",
-    description="Фильтрация, нормализация и координация сообщений",
-    version="1.4"
+    description="Фильтрация, нормализация и координация сообщений с ИИ",
+    version="1.5"
 )
 
 app.add_middleware(
@@ -425,17 +606,21 @@ async def health_check():
         "status": "online",
         "agent_id": 1,
         "name": "Агент №1 (Координатор)",
-        "version": "1.4 (Mistral AI)",
-        "ai_provider": "Не использует ИИ (только логика)",
+        "version": "1.5 (Mistral AI координатор)",
+        "ai_provider": f"Mistral AI ({MISTRAL_MODEL})" if mistral_client else "Mistral AI (недоступен)",
+        "import_version": MISTRAL_IMPORT_VERSION,
+        "import_success": MISTRAL_IMPORT_SUCCESS,
+        "client_status": "✅ Создан" if mistral_client else "❌ Не создан",
         "next_agents_ai": "Mistral AI (Агенты 2-5)",
         "default_rules_v2": DEFAULT_RULES,
         "configuration": "Environment variables (.env)",
         "features": [
             "Фильтрация групповых чатов",
             "Нормализация данных",
+            "Mistral AI координация стратегий",
             "Анализ сложности сообщений",
             "Поддержка кастомных правил v2.0",
-            "Подготовка для Mistral AI"
+            "Подготовка для Mistral AI агентов"
         ],
         "timestamp": datetime.now().isoformat(),
         "redis_queue": QUEUE_AGENT_1_INPUT,
@@ -466,18 +651,19 @@ async def get_stats():
             "total_chats": total_chats,
             "chats_with_custom_rules": chats_with_custom_rules,
             "agent_id": 1,
-            "version": "1.4 (Mistral AI)",
+            "version": "1.5 (Mistral AI координатор)",
             "default_rules_v2": DEFAULT_RULES,
             "configuration": "Environment variables",
-            "ai_provider": "Логика + передача в Mistral AI агенты",
+            "ai_provider": f"Mistral AI ({MISTRAL_MODEL})" if mistral_client else "недоступен",
+            "coordination_features": "Mistral AI стратегии",
             "timestamp": datetime.now().isoformat()
         }
     finally:
         db_session.close()
 
-@app.get("/test_filter")
-async def test_filter(message: str = "Тестовое сообщение"):
-    """Тестирование фильтра сообщений"""
+@app.get("/test_coordination")
+async def test_coordination(message: str = "Тестовое сообщение"):
+    """Тестирование координации с Mistral AI"""
     test_data = {
         "message": message,
         "user_id": 123,
@@ -489,12 +675,31 @@ async def test_filter(message: str = "Тестовое сообщение"):
     
     should_process, reason = should_process_message(test_data)
     
+    if not should_process:
+        return {
+            "should_process": False,
+            "reason": reason,
+            "test_message": message
+        }
+    
+    # Нормализация и предварительный анализ
+    normalized = normalize_message_data(test_data)
+    preliminary = normalized["agent_1_analysis"]
+    
+    # Координация с Mistral AI
+    ai_coordination = coordinate_with_mistral(message, preliminary)
+    
     return {
-        "should_process": should_process,
-        "reason": reason,
+        "should_process": True,  
         "test_message": message,
-        "agent_version": "1.4 (Mistral AI)",
-        "will_be_processed_by": "Mistral AI агенты (2-5)" if should_process else "Никем (отфильтровано)"
+        "preliminary_strategy": preliminary["suggested_strategy"],
+        "complexity_score": preliminary["complexity_score"],
+        "ai_final_strategy": ai_coordination["final_strategy"],
+        "ai_confidence": ai_coordination["ai_confidence"],
+        "ai_reasoning": ai_coordination["ai_reasoning"],
+        "coordination_method": ai_coordination["method"],
+        "agent_version": "1.5 (Mistral AI координатор)",
+        "will_be_processed_by": "Mistral AI агенты (2-5)"
     }
 
 # ============================================================================

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TELEGRAM BOT с управлением агентами и настройкой правил (с конфигурацией из .env)
+TeleGuard - TELEGRAM BOT с исправленными кнопками (версия 2.5)
 """
 
 import logging
@@ -13,76 +13,63 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import Column, Integer, String, ForeignKey, BigInteger, Boolean, DateTime, create_engine, Text
 from sqlalchemy.orm import relationship, sessionmaker
 import requests
 
-# Импортируем централизованную конфигурацию
-from config import (
-    TELEGRAM_BOT_TOKEN,
-    POSTGRES_URL,
-    get_redis_config,
-    MSK_TIMEZONE,
-    DEFAULT_RULES,
-    AGENT_PORTS,
-    setup_logging
+async def safe_edit_message(callback_query, text, reply_markup=None, parse_mode="HTML"):
+    """
+    Безопасное редактирование сообщения с обработкой дублирования контента
+    """
+    try:
+        await callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Если контент не изменился, просто отвечаем callback
+            await callback_query.answer("ℹ️ Данные актуальны", show_alert=False)
+        else:
+            # Перебрасываем другие ошибки
+            raise e
+
+# ============================================================================
+# КОНФИГУРАЦИЯ
+# ============================================================================
+TOKEN = '8320009669:AAHiVLu-Em8EOXBNHYrJ0UhVX3mMMTm8S_g'
+POSTGRES_URL = 'postgresql://tguser:mnvm7110@176.108.248.211:5432/teleguard_db?sslmode=disable'
+
+# Redis конфигурация
+REDIS_HOST = 'localhost'
+REDIS_PORT = 6379
+REDIS_DB = 0
+
+# ============================================================================
+# ЛОГИРОВАНИЕ
+# ============================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [TELEGRAM BOT] %(levelname)s: %(message)s'
 )
+logger = logging.getLogger(__name__)
 
 # ============================================================================
-# НАСТРОЙКИ
+# ИНИЦИАЛИЗАЦИЯ
 # ============================================================================
-# Настройка логирования
-logger = setup_logging("TELEGRAM BOT")
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-# FSM для изменения правил
-storage = MemoryStorage()
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-dp = Dispatcher(storage=storage)
+# ============================================================================
+# МОДЕЛИ БД
+# ============================================================================
 Base = declarative_base()
 
-# ============================================================================
-# FSM СОСТОЯНИЯ
-# ============================================================================
-class RulesState(StatesGroup):
-    waiting_for_rules = State()
-
-# ============================================================================
-# ФУНКЦИИ ДЛЯ РАБОТЫ С МОСКОВСКИМ ВРЕМЕНЕМ
-# ============================================================================
-def get_moscow_time():
-    """Получить текущее московское время"""
-    return datetime.now(MSK_TIMEZONE)
-
-def format_moscow_time(dt=None, format_str="%d.%m.%Y %H:%M:%S"):
-    """Форматировать московское время"""
-    if dt is None:
-        dt = get_moscow_time()
-    elif dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc).astimezone(MSK_TIMEZONE)
-    elif dt.tzinfo != MSK_TIMEZONE:
-        dt = dt.astimezone(MSK_TIMEZONE)
-    
-    return dt.strftime(format_str)
-
-def get_moscow_time_str(format_str="%H:%M:%S"):
-    """Получить текущее московское время в виде строки"""
-    return format_moscow_time(get_moscow_time(), format_str)
-
-# ============================================================================
-# МОДЕЛИ БД (ОБНОВЛЕННЫЕ)
-# ============================================================================
 class Chat(Base):
     __tablename__ = 'chats'
     id = Column(Integer, primary_key=True)
     tg_chat_id = Column(String, unique=True, nullable=False)
     title = Column(String, nullable=True)
     chat_type = Column(String, default='group')
-    added_at = Column(DateTime, default=lambda: get_moscow_time())
+    added_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
     custom_rules = Column(Text, nullable=True)  # Новое поле для кастомных правил
     
@@ -99,7 +86,7 @@ class Message(Base):
     sender_id = Column(BigInteger)
     message_text = Column(Text)
     message_link = Column(String)
-    created_at = Column(DateTime, default=lambda: get_moscow_time())
+    created_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime)
     ai_response = Column(Text)
     
@@ -112,7 +99,7 @@ class Moderator(Base):
     username = Column(String)
     telegram_user_id = Column(BigInteger)
     is_active = Column(Boolean, default=True)
-    added_at = Column(DateTime, default=lambda: get_moscow_time())
+    added_at = Column(DateTime, default=datetime.utcnow)
     
     chat = relationship('Chat', back_populates='moderators')
 
@@ -125,13 +112,13 @@ class NegativeMessage(Base):
     sender_id = Column(BigInteger)
     negative_reason = Column(Text)
     is_sent_to_moderators = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=lambda: get_moscow_time())
+    created_at = Column(DateTime, default=datetime.utcnow)
     agent_id = Column(Integer)
     
     chat = relationship('Chat', back_populates='negative_messages')
 
 # ============================================================================
-# ИНИЦИАЛИЗАЦИЯ БД И REDIS
+# ИНИЦИАЛИЗАЦИЯ БД
 # ============================================================================
 engine = create_engine(POSTGRES_URL)
 Base.metadata.create_all(engine)
@@ -140,87 +127,33 @@ SessionLocal = sessionmaker(bind=engine)
 def get_db_session():
     return SessionLocal()
 
-# Подключение к Redis
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ REDIS
+# ============================================================================
 try:
-    redis_config = get_redis_config()
-    redis_client = redis.Redis(**redis_config)
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
     redis_client.ping()
-    logger.info(f"✅ Подключение к Redis успешно")
+    logger.info(f"✅ Подключение к Redis успешно ({REDIS_HOST}:{REDIS_PORT})")
 except Exception as e:
     logger.error(f"❌ Не удалось подключиться к Redis: {e}")
     redis_client = None
 
 # ============================================================================
-# ФУНКЦИИ ПРОВЕРКИ ТИПА ЧАТА И ПРАВ
+# ФУНКЦИИ ФИЛЬТРАЦИИ
 # ============================================================================
 def is_group_chat(chat_type: str) -> bool:
     """Проверяет, является ли чат групповым"""
     return chat_type in ['group', 'supergroup', 'channel']
 
 def should_process_chat(message: types.Message) -> bool:
-    """Определяет, нужно ли обрабатывать сообщение из этого чата"""
+    """Проверяет, нужно ли обрабатывать чат"""
     return is_group_chat(message.chat.type)
 
-async def is_user_admin(bot_instance: Bot, chat_id: int, user_id: int) -> bool:
-    """Проверяет, является ли пользователь администратором в чате"""
-    try:
-        member = await bot_instance.get_chat_member(chat_id, user_id)
-        return member.status in ['creator', 'administrator']
-    except Exception as e:
-        logger.error(f"Ошибка проверки прав пользователя {user_id} в чате {chat_id}: {e}")
-        return False
-
 # ============================================================================
-# ФУНКЦИИ РАБОТЫ С ПРАВИЛАМИ
-# ============================================================================
-def get_chat_rules(chat_id: int) -> tuple:
-    """Получает правила для конкретного чата и информацию об их типе"""
-    try:
-        db_session = get_db_session()
-        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
-        
-        if chat and chat.custom_rules:
-            # Если есть кастомные правила
-            rules_list = [rule.strip() for rule in chat.custom_rules.split('\n') if rule.strip()]
-            db_session.close()
-            return rules_list, False  # False = не стандартные правила
-        else:
-            # Стандартные правила
-            db_session.close()
-            return DEFAULT_RULES, True  # True = стандартные правила
-            
-    except Exception as e:
-        logger.error(f"Ошибка получения правил для чата {chat_id}: {e}")
-        return DEFAULT_RULES, True
-
-def save_chat_rules(chat_id: int, rules: list) -> bool:
-    """Сохраняет правила для конкретного чата"""
-    try:
-        db_session = get_db_session()
-        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
-        
-        if not chat:
-            chat = Chat(tg_chat_id=str(chat_id))
-            db_session.add(chat)
-            db_session.commit()
-        
-        # Сохраняем правила как текст, разделенный переносами строк
-        chat.custom_rules = '\n'.join(rules)
-        db_session.commit()
-        db_session.close()
-        
-        logger.info(f"Правила для чата {chat_id} обновлены: {len(rules)} правил")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Ошибка сохранения правил для чата {chat_id}: {e}")
-        return False
-
-# ============================================================================
-# ФУНКЦИИ ПРОВЕРКИ СОСТОЯНИЯ АГЕНТОВ
+# ФУНКЦИИ ДЛЯ РАБОТЫ С АГЕНТАМИ
 # ============================================================================
 def check_agent_health(agent_id: int, port: int) -> dict:
-    """Проверка состояния агента через health check"""
+    """Проверка health check агента"""
     try:
         url = f"http://localhost:{port}/health"
         response = requests.get(url, timeout=5)
@@ -232,13 +165,13 @@ def check_agent_health(agent_id: int, port: int) -> dict:
         return {"status": "offline", "message": str(e)}
 
 def get_all_agents_status() -> dict:
-    """Получить статус всех агентов"""
+    """Получает статус всех агентов"""
     agents = {
-        1: {"name": "Агент №1 (Координатор)", "port": AGENT_PORTS[1]},
-        2: {"name": "Агент №2 (Анализатор)", "port": AGENT_PORTS[2]},
-        3: {"name": "Агент №3 (OpenAI)", "port": AGENT_PORTS[3]},
-        4: {"name": "Агент №4 (Эвристический + OpenAI)", "port": AGENT_PORTS[4]},
-        5: {"name": "Агент №5 (Арбитр OpenAI)", "port": AGENT_PORTS[5]}
+        1: {"name": "Агент №1 (Координатор)", "port": 8001},
+        2: {"name": "Агент №2 (Анализатор)", "port": 8002},
+        3: {"name": "Агент №3 (Mistral AI Модератор)", "port": 8003},
+        4: {"name": "Агент №4 (Эвристика + Mistral AI)", "port": 8004},
+        5: {"name": "Агент №5 (Mistral AI Арбитр)", "port": 8005}
     }
     
     status = {}
@@ -249,78 +182,64 @@ def get_all_agents_status() -> dict:
             "port": info["port"],
             "status": health.get("status", "unknown"),
             "message": health.get("message", ""),
-            "ai_provider": health.get("ai_provider", "OpenAI API"),
-            "prompt_version": health.get("prompt_version", "v2.0"),
-            "configuration": health.get("configuration", "Environment variables"),
             "uptime": health.get("uptime_seconds", 0) if health.get("status") == "online" else 0
         }
     
     return status
 
-# ============================================================================
-# ФУНКЦИИ ТЕСТИРОВАНИЯ АГЕНТОВ
-# ============================================================================
 def test_agents_with_message(test_message: str, user_id: int, username: str, chat_id: int) -> dict:
-    """Тестирование агентов 3, 4 и 5 с сообщением"""
+    """Тестирует агенты 3, 4 и 5 с сообщением"""
     if not redis_client:
         return {"error": "Redis не подключен"}
-    
-    # Получаем правила для конкретного чата
-    rules, is_default = get_chat_rules(chat_id)
     
     # Подготавливаем тестовые данные
     test_data = {
         "message": test_message,
-        "rules": rules,
+        "rules": [
+            "Запрещена расовая дискриминация",
+            "Запрещены ссылки",
+            "Запрещена нецензурная лексика и оскорбления"
+        ],
         "user_id": user_id,
         "username": username,
         "chat_id": chat_id,
-        "message_id": int(time.time()),  # Уникальный ID сообщения
+        "message_id": int(time.time()),  # Уникальный ID
         "message_link": f"https://t.me/test/{int(time.time())}"
     }
     
     try:
-        # Отправляем в очереди агентов 3 и 4 НАПРЯМУЮ (минуя агент 1 и 2 для тестов)
+        # Отправляем тестовое сообщение в очереди агентов 3 и 4
         test_json = json.dumps(test_data, ensure_ascii=False)
-        
-        from config import QUEUE_AGENT_3_INPUT, QUEUE_AGENT_4_INPUT
-        
-        redis_client.rpush(QUEUE_AGENT_3_INPUT, test_json)
-        redis_client.rpush(QUEUE_AGENT_4_INPUT, test_json)
+        redis_client.rpush("queue:agent3:input", test_json)
+        redis_client.rpush("queue:agent4:input", test_json)
         
         logger.info(f"📤 Тестовое сообщение отправлено агентам 3 и 4")
         
-        results = {
-            "sent": True, 
-            "message_id": test_data["message_id"],
-            "rules_used": rules,
-            "is_default_rules": is_default
+        return {
+            "results": "sent",
+            "message_id": test_data["message_id"]
         }
-        
-        return results
-        
     except Exception as e:
         logger.error(f"❌ Ошибка тестирования агентов: {e}")
         return {"error": str(e)}
 
 # ============================================================================
-# ФУНКЦИИ РАБОТЫ С СООБЩЕНИЯМИ ИЗ БД (ТОЛЬКО ГРУППОВЫЕ ЧАТЫ)
+# ФУНКЦИИ ДЛЯ РАБОТЫ С БД
 # ============================================================================
 def get_recent_messages(chat_id: int, limit: int = 10) -> list:
-    """Получить последние сообщения из КОНКРЕТНОГО ГРУППОВОГО чата"""
+    """Получает последние сообщения из чата"""
     try:
         db_session = get_db_session()
-        
         chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
+        
         if not chat:
+            db_session.close()
             return []
         
-        # Проверяем, что это групповой чат
         if not is_group_chat(chat.chat_type):
             db_session.close()
             return []
         
-        # Фильтруем сообщения только из ЭТОГО группового чата
         messages = db_session.query(Message).filter_by(chat_id=chat.id).order_by(
             Message.created_at.desc()
         ).limit(limit).all()
@@ -332,9 +251,9 @@ def get_recent_messages(chat_id: int, limit: int = 10) -> list:
                 "message_id": msg.message_id,
                 "sender_username": msg.sender_username,
                 "sender_id": msg.sender_id,
-                "message_text": msg.message_text[:100] + "..." if len(msg.message_text or "") > 100 else msg.message_text,
-                "created_at": format_moscow_time(msg.created_at),  # Московское время
-                "ai_response": msg.ai_response[:50] + "..." if msg.ai_response and len(msg.ai_response) > 50 else msg.ai_response,
+                "message_text": msg.message_text[:100] + "..." if (msg.message_text and len(msg.message_text) > 100) else msg.message_text,
+                "created_at": msg.created_at.strftime("%d.%m.%Y %H:%M:%S"),
+                "ai_response": msg.ai_response[:50] + "..." if (msg.ai_response and len(msg.ai_response) > 50) else msg.ai_response,
                 "chat_id": chat_id,
                 "chat_type": chat.chat_type
             })
@@ -347,20 +266,19 @@ def get_recent_messages(chat_id: int, limit: int = 10) -> list:
         return []
 
 def get_negative_messages(chat_id: int, limit: int = 10) -> list:
-    """Получить негативные сообщения из КОНКРЕТНОГО ГРУППОВОГО чата"""
+    """Получает негативные сообщения из чата"""
     try:
         db_session = get_db_session()
-        
         chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
+        
         if not chat:
+            db_session.close()
             return []
         
-        # Проверяем, что это групповой чат
         if not is_group_chat(chat.chat_type):
             db_session.close()
             return []
         
-        # Фильтруем негативные сообщения только из ЭТОГО группового чата
         neg_messages = db_session.query(NegativeMessage).filter_by(chat_id=chat.id).order_by(
             NegativeMessage.created_at.desc()
         ).limit(limit).all()
@@ -371,9 +289,9 @@ def get_negative_messages(chat_id: int, limit: int = 10) -> list:
                 "id": msg.id,
                 "sender_username": msg.sender_username,
                 "sender_id": msg.sender_id,
-                "negative_reason": msg.negative_reason[:100] + "..." if len(msg.negative_reason or "") > 100 else msg.negative_reason,
+                "negative_reason": msg.negative_reason[:100] + "..." if (msg.negative_reason and len(msg.negative_reason) > 100) else msg.negative_reason,
                 "agent_id": msg.agent_id,
-                "created_at": format_moscow_time(msg.created_at),  # Московское время
+                "created_at": msg.created_at.strftime("%d.%m.%Y %H:%M:%S"),
                 "is_sent_to_moderators": msg.is_sent_to_moderators,
                 "chat_id": chat_id,
                 "chat_type": chat.chat_type
@@ -386,39 +304,33 @@ def get_negative_messages(chat_id: int, limit: int = 10) -> list:
         logger.error(f"❌ Ошибка получения негативных сообщений: {e}")
         return []
 
-# ============================================================================
-# ФУНКЦИИ УПРАВЛЕНИЯ ЧАТАМИ И МОДЕРАТОРАМИ (ТОЛЬКО ГРУППОВЫЕ ЧАТЫ)
-# ============================================================================
 def add_chat_to_db(chat_id: int, title: str = None, chat_type: str = "group") -> bool:
-    """Добавить новый ГРУППОВОЙ чат в базу данных"""
-    # Проверяем, что это групповой чат
+    """Добавляет чат в БД"""
     if not is_group_chat(chat_type):
-        logger.info(f"❌ Чат {chat_id} не добавлен - это не групповой чат (тип: {chat_type})")
+        logger.info(f"Чат {chat_id} пропущен - не групповой чат ({chat_type})")
         return False
     
     try:
         db_session = get_db_session()
         
-        # Проверяем, существует ли уже такой чат
+        # Проверяем, есть ли уже такой чат
         existing_chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
         if existing_chat:
             db_session.close()
             return False  # Чат уже существует
         
-        # Создаем новый групповой чат
+        # Создаем новый чат
         new_chat = Chat(
             tg_chat_id=str(chat_id),
-            title=title or f"Групповой чат {chat_id}",
+            title=title or f"Чат {chat_id}",
             chat_type=chat_type,
-            is_active=True,
-            added_at=get_moscow_time()
+            is_active=True
         )
-        
         db_session.add(new_chat)
         db_session.commit()
         db_session.close()
         
-        logger.info(f"✅ Добавлен новый групповой чат: {chat_id} ({title}) - тип: {chat_type}")
+        logger.info(f"✅ Чат {chat_id} добавлен: {title} - {chat_type}")
         return True
         
     except Exception as e:
@@ -426,42 +338,42 @@ def add_chat_to_db(chat_id: int, title: str = None, chat_type: str = "group") ->
         return False
 
 def add_moderator_to_chat(chat_id: int, user_id: int, username: str) -> bool:
-    """Добавить модератора к ГРУППОВОМУ чату"""
+    """Добавляет модератора в чат"""
     try:
         db_session = get_db_session()
-        
         chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
+        
         if not chat:
             db_session.close()
             return False
         
-        # Проверяем, что это групповой чат
         if not is_group_chat(chat.chat_type):
             db_session.close()
-            logger.info(f"❌ Модератор не добавлен - это не групповой чат (тип: {chat.chat_type})")
+            logger.info(f"Пропущен чат {chat_id} - не групповой чат ({chat.chat_type})")
             return False
         
-        # Проверяем, не является ли пользователь уже модератором
+        # Проверяем, есть ли уже модератор
         existing_mod = db_session.query(Moderator).filter_by(
-            chat_id=chat.id, telegram_user_id=user_id
+            chat_id=chat.id,
+            telegram_user_id=user_id
         ).first()
         
         if existing_mod:
-            existing_mod.is_active = True  # Реактивируем, если был деактивирован
+            existing_mod.is_active = True  # Активируем, если был деактивирован
         else:
+            # Добавляем нового модератора
             new_moderator = Moderator(
                 chat_id=chat.id,
                 username=username,
                 telegram_user_id=user_id,
-                is_active=True,
-                added_at=get_moscow_time()
+                is_active=True
             )
             db_session.add(new_moderator)
         
         db_session.commit()
         db_session.close()
         
-        logger.info(f"✅ Добавлен модератор @{username} для группового чата {chat_id}")
+        logger.info(f"✅ Модератор {username} добавлен в чат {chat_id}")
         return True
         
     except Exception as e:
@@ -469,117 +381,66 @@ def add_moderator_to_chat(chat_id: int, user_id: int, username: str) -> bool:
         return False
 
 # ============================================================================
-# ФУНКЦИЯ ДЛЯ БЕЗОПАСНОГО РЕДАКТИРОВАНИЯ СООБЩЕНИЙ
+# ОБРАБОТЧИКИ КОМАНД
 # ============================================================================
-async def safe_edit_message(message, text, reply_markup=None, parse_mode='HTML'):
-    """Безопасное редактирование сообщения с обработкой ошибки TelegramBadRequest"""
-    try:
-        await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            # Сообщение не изменилось - просто игнорируем ошибку
-            logger.debug("Сообщение не изменилось, пропускаем редактирование")
-            pass
-        else:
-            # Другая ошибка - перехватываем и логируем
-            logger.error(f"Ошибка редактирования сообщения: {e}")
-            # Попробуем отправить новое сообщение вместо редактирования
-            try:
-                await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
-            except Exception as fallback_error:
-                logger.error(f"Не удалось отправить сообщение: {fallback_error}")
-
-# ============================================================================
-# TELEGRAM BOT HANDLERS (такие же как в оригинале, но используют конфигурацию из .env)
-# ============================================================================
-
-@dp.message(Command('start'))
+@dp.message(Command("start"))
 async def start_command(message: types.Message):
     """Команда /start"""
-    # Проверяем тип чата
     if not is_group_chat(message.chat.type):
         await message.answer(
-            "🤖 <b>TeleGuard Bot (OpenAI API, .env конфигурация)</b>\n\n"
-            "ℹ️ Этот бот работает только в <b>групповых чатах</b>.\n"
-            "Добавьте меня в групповой чат для модерации сообщений.\n\n"
-            "🧠 <b>ИИ провайдер:</b> OpenAI API (GPT-3.5-turbo)\n"
-            "⚙️ <b>Конфигурация:</b> Environment variables (.env)",
-            parse_mode='HTML'
+            "<b>TeleGuard Bot</b>\n\n"
+            "<b>Ошибка:</b> Этот бот работает только в групповых чатах.",
+            parse_mode="HTML"
         )
         return
     
-    # Проверяем права пользователя
-    is_admin = await is_user_admin(bot, message.chat.id, message.from_user.id)
-    if not is_admin:
-        await message.answer("Тебе тут делать нечего")
-        return
-    
+    # Создаем клавиатуру
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Состояние агентов", callback_data="status_agents")],
-        [InlineKeyboardButton(text="📝 Сообщения чата", callback_data="chat_messages")],
-        [InlineKeyboardButton(text="⚠️ Негативные сообщения", callback_data="negative_messages")],
-        [InlineKeyboardButton(text="📋 Правила чата", callback_data="chat_rules")],
+        [InlineKeyboardButton(text="💬 Сообщения чата", callback_data="chat_messages")],
+        [InlineKeyboardButton(text="⚠️ Нарушения", callback_data="negative_messages")],
         [InlineKeyboardButton(text="🧪 Тест агентов", callback_data="test_agents")],
         [InlineKeyboardButton(text="➕ Добавить чат", callback_data="add_chat")]
     ])
     
-    current_time_msk = get_moscow_time_str()
+    welcome_text = (
+        f"<b>🤖 TeleGuard Bot - Система модерации</b>\n\n"
+        f"<b>📍 Чат:</b> {message.chat.title or 'Без названия'}\n"
+        f"<b>🆔 ID:</b> <code>{message.chat.id}</code>\n"
+        f"<b>📝 Тип:</b> {message.chat.type}\n\n"
+        f"<b>🔧 Функции:</b>\n"
+        f"• <b>📊 Состояние агентов</b> - проверка работы агентов 1-5\n"
+        f"• <b>💬 Сообщения чата</b> - последние обработанные сообщения\n"
+        f"• <b>⚠️ Нарушения</b> - найденные нарушения\n"
+        f"• <b>🧪 Тест агентов</b> - тестирование с примерами\n"
+        f"• <b>➕ Добавить чат</b> - регистрация для модерации\n\n"
+        f"<i>🤖 Работает на Mistral AI</i>"
+    )
     
-    welcome_text = f"""
-🤖 <b>TeleGuard Bot - Многоагентная система модерации</b>
-🧠 <b>ИИ провайдер:</b> OpenAI API (GPT-3.5-turbo)
-⚙️ <b>Конфигурация:</b> Environment variables (.env)
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
 
-📋 <b>Групповой чат:</b> {message.chat.title or 'Без названия'}
-🆔 <b>ID чата:</b> {message.chat.id}
-📊 <b>Тип:</b> {message.chat.type}
-🕐 <b>Время (MSK):</b> {current_time_msk}
-
-Доступные функции:
-📊 <b>Состояние агентов</b> - проверка работы всех агентов (1-5)
-📝 <b>Сообщения чата</b> - последние сообщения из этого чата
-⚠️ <b>Негативные сообщения</b> - найденные нарушения в этом чате
-📋 <b>Правила чата</b> - просмотр и изменение правил модерации
-🧪 <b>Тест агентов</b> - проверка работы системы модерации
-➕ <b>Добавить чат</b> - регистрация этого чата для модерации
-
-<i>Выберите действие из меню ниже:</i>
-    """
-    
-    await message.answer(welcome_text, reply_markup=keyboard, parse_mode='HTML')
-
-# Остальные обработчики остаются без изменений, но используют конфигурацию из config.py
-# Для краткости показываю только несколько ключевых обработчиков
-
+# ============================================================================
+# ОБРАБОТЧИКИ CALLBACK QUERY (КНОПКИ)
+# ============================================================================
 @dp.callback_query(lambda c: c.data == "status_agents")
 async def show_agents_status(callback_query: types.CallbackQuery):
-    """Показать состояние агентов"""
+    """Показывает состояние агентов"""
     await callback_query.answer()
     
-    # Проверяем тип чата
     if not is_group_chat(callback_query.message.chat.type):
-        await safe_edit_message(
-            callback_query.message,
-            "ℹ️ Эта функция доступна только в групповых чатах."
-        )
-        return
-    
-    # Проверяем права пользователя
-    is_admin = await is_user_admin(bot, callback_query.message.chat.id, callback_query.from_user.id)
-    if not is_admin:
-        await safe_edit_message(callback_query.message, "Тебе тут делать нечего")
+        await callback_query.message.edit_text("❌ Этот бот работает только в групповых чатах.")
         return
     
     status = get_all_agents_status()
     
-    status_text = "📊 <b>Состояние агентов (.env конфигурация):</b>\n\n"
+    status_text = "<b>📊 Состояние агентов</b>\n\n"
     
     for agent_id, info in status.items():
         if info["status"] == "online":
             emoji = "🟢"
             uptime_hours = info["uptime"] // 3600
             uptime_minutes = (info["uptime"] % 3600) // 60
-            details = f"Работает {uptime_hours}ч {uptime_minutes}м"
+            details = f"⏱ {uptime_hours}ч {uptime_minutes}м"
         elif info["status"] == "offline":
             emoji = "🔴"
             details = "Не отвечает"
@@ -587,19 +448,9 @@ async def show_agents_status(callback_query: types.CallbackQuery):
             emoji = "🟡"
             details = info.get("message", "Неизвестно")
         
-        ai_provider = info.get("ai_provider", "OpenAI API")
-        prompt_version = info.get("prompt_version", "")
-        configuration = info.get("configuration", "")
-        
         status_text += f"{emoji} <b>{info['name']}</b>\n"
-        status_text += f"   Порт: {info['port']}\n"
-        status_text += f"   Статус: {details}\n"
-        status_text += f"   ИИ: {ai_provider}\n"
-        if prompt_version:
-            status_text += f"   Промпт: {prompt_version}\n"
-        if configuration:
-            status_text += f"   Конфиг: {configuration}\n"
-        status_text += "\n"
+        status_text += f"   🔌 Порт: {info['port']}\n"
+        status_text += f"   📊 {details}\n\n"
     
     # Проверяем Redis
     if redis_client:
@@ -609,116 +460,352 @@ async def show_agents_status(callback_query: types.CallbackQuery):
         except:
             redis_status = "🔴 Ошибка"
     else:
-        redis_status = "🔴 Не подключен"
+        redis_status = "🔴 Не настроен"
     
-    status_text += f"📡 <b>Redis:</b> {redis_status}\n"
-    status_text += f"🗄️ <b>PostgreSQL:</b> 🟢 Подключен\n"
-    status_text += f"🧠 <b>ИИ платформа:</b> OpenAI API\n"
-    status_text += f"⚙️ <b>Конфигурация:</b> Environment variables (.env)\n"
-    status_text += f"🕐 <b>Обновлено (MSK):</b> {get_moscow_time_str()}"
+    status_text += f"<b>📡 Redis:</b> {redis_status}\n"
+    status_text += f"<b>🗄️ PostgreSQL:</b> 🟢 Подключен"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="status_agents")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ])
     
-    await safe_edit_message(callback_query.message, status_text, reply_markup=keyboard)
+    await callback_query.message.edit_text(status_text, reply_markup=keyboard, parse_mode="HTML")
 
-# Добавляю остальные обработчики...
-# (Для краткости показываю основную структуру)
+@dp.callback_query(lambda c: c.data == "chat_messages")
+async def show_chat_messages(callback_query: types.CallbackQuery):
+    """Показывает сообщения чата"""
+    await callback_query.answer()
+    
+    if not is_group_chat(callback_query.message.chat.type):
+        await callback_query.message.edit_text("❌ Этот бот работает только в групповых чатах.")
+        return
+    
+    chat_id = callback_query.message.chat.id
+    messages = get_recent_messages(chat_id, limit=5)
+    
+    if not messages:
+        text = f"<b>💬 Сообщения чата {chat_id}</b>\n\n❌ Сообщений не найдено."
+    else:
+        text = f"<b>💬 Последние сообщения чата {chat_id}</b>\n\n"
+        
+        for i, msg in enumerate(messages, 1):
+            text += f"<b>{i}.</b> <b>@{msg['sender_username'] or 'unknown'}</b>:\n"
+            text += f"   📝 {msg['message_text'] or 'Пустое сообщение'}\n"
+            text += f"   📅 {msg['created_at']}\n"
+            if msg['ai_response']:
+                text += f"   🤖 {msg['ai_response']}\n"
+            text += "\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="chat_messages")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+    ])
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data == "negative_messages")
+async def show_negative_messages(callback_query: types.CallbackQuery):
+    """Показывает нарушения"""
+    await callback_query.answer()
+    
+    if not is_group_chat(callback_query.message.chat.type):
+        await callback_query.message.edit_text("❌ Этот бот работает только в групповых чатах.")
+        return
+    
+    chat_id = callback_query.message.chat.id
+    neg_messages = get_negative_messages(chat_id, limit=5)
+    
+    if not neg_messages:
+        text = f"<b>⚠️ Нарушения в чате {chat_id}</b>\n\n✅ Нарушений не найдено."
+    else:
+        text = f"<b>⚠️ Последние нарушения в чате {chat_id}</b>\n\n"
+        
+        for i, msg in enumerate(neg_messages, 1):
+            agent_name = f"Агент #{msg['agent_id']}" if msg['agent_id'] else "Неизвестный агент"
+            sent_status = "✅ Отправлено" if msg['is_sent_to_moderators'] else "⏳ В обработке"
+            
+            text += f"<b>{i}.</b> <b>@{msg['sender_username'] or 'unknown'}</b>:\n"
+            text += f"   ⚠️ {msg['negative_reason'] or 'Причина не указана'}\n"
+            text += f"   🤖 {agent_name}\n"
+            text += f"   📬 {sent_status}\n"
+            text += f"   📅 {msg['created_at']}\n\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="negative_messages")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+    ])
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data == "test_agents")
+async def test_agents_menu(callback_query: types.CallbackQuery):
+    """Меню тестирования агентов"""
+    await callback_query.answer()
+    
+    if not is_group_chat(callback_query.message.chat.type):
+        await callback_query.message.edit_text("❌ Этот бот работает только в групповых чатах.")
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Нормальное сообщение", callback_data="test_normal")],
+        [InlineKeyboardButton(text="🤬 Мат и оскорбления", callback_data="test_profanity")],
+        [InlineKeyboardButton(text="📢 Спам со ссылкой", callback_data="test_spam")],
+        [InlineKeyboardButton(text="⚡ Расовая дискриминация", callback_data="test_discrimination")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+    ])
+    
+    text = (
+        "<b>🧪 Тестирование агентов</b>\n\n"
+        "<b>Выберите тип тестового сообщения:</b>\n\n"
+        "• <b>✅ Нормальное</b> - обычное безопасное сообщение\n"
+        "• <b>🤬 Мат</b> - сообщение с нецензурной лексикой\n"
+        "• <b>📢 Спам</b> - рекламное сообщение со ссылкой\n"
+        "• <b>⚡ Дискриминация</b> - расово дискриминационное сообщение\n\n"
+        "<i>Сообщения будут отправлены агентам 3, 4 и 5 для анализа.</i>"
+    )
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data == "add_chat")
+async def add_chat_menu(callback_query: types.CallbackQuery):
+    """Добавление чата в систему"""
+    await callback_query.answer()
+    
+    if not is_group_chat(callback_query.message.chat.type):
+        text = (
+            f"<b>❌ Ошибка добавления чата</b>\n\n"
+            f"TeleGuard Bot работает только в <b>групповых чатах</b>.\n\n"
+            f"<b>🆔 ID:</b> <code>{callback_query.message.chat.id}</code>\n"
+            f"<b>📝 Тип:</b> {callback_query.message.chat.type}\n\n"
+            f"Добавьте бота в групповой чат и повторите попытку."
+        )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+        ])
+        
+        await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        return
+    
+    chat_id = callback_query.message.chat.id
+    chat_title = getattr(callback_query.message.chat, 'title', f"Чат {chat_id}")
+    chat_type = callback_query.message.chat.type
+    
+    # Пытаемся добавить чат
+    success = add_chat_to_db(chat_id, chat_title, chat_type)
+    
+    if success:
+        # Добавляем пользователя как модератора
+        user_id = callback_query.from_user.id
+        username = callback_query.from_user.username or f"user{user_id}"
+        add_moderator_to_chat(chat_id, user_id, username)
+        
+        text = (
+            f"<b>✅ Чат успешно добавлен!</b>\n\n"
+            f"<b>📍 Название:</b> {chat_title}\n"
+            f"<b>🆔 ID:</b> <code>{chat_id}</code>\n"
+            f"<b>📝 Тип:</b> {chat_type}\n"
+            f"<b>👤 Модератор:</b> @{username}\n\n"
+            f"Теперь TeleGuard будет модерировать этот чат."
+        )
+    else:
+        text = (
+            f"<b>⚠️ Чат уже зарегистрирован</b>\n\n"
+            f"<b>📍 Название:</b> {chat_title}\n"
+            f"<b>🆔 ID:</b> <code>{chat_id}</code>\n"
+            f"<b>📝 Тип:</b> {chat_type}\n\n"
+            f"Этот чат уже находится под защитой TeleGuard."
+        )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+    ])
+    
+    await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 # ============================================================================
-# ОБРАБОТКА ОБЫЧНЫХ СООБЩЕНИЙ (ТОЛЬКО ГРУППОВЫЕ ЧАТЫ)
+# ОБРАБОТЧИКИ ТЕСТОВЫХ СООБЩЕНИЙ
+# ============================================================================
+@dp.callback_query(lambda c: c.data == "test_normal")
+async def test_normal_message(callback_query: types.CallbackQuery):
+    await run_agent_test(callback_query, "Привет всем! Как дела?", "Нормальное сообщение")
+
+@dp.callback_query(lambda c: c.data == "test_profanity")
+async def test_profanity_message(callback_query: types.CallbackQuery):
+    await run_agent_test(callback_query, "Ты дурак и идиот! Хуй тебе!", "Мат и оскорбления")
+
+@dp.callback_query(lambda c: c.data == "test_spam")
+async def test_spam_message(callback_query: types.CallbackQuery):
+    await run_agent_test(callback_query, "Переходи по ссылке t.me/spam_channel! Заработок от 100$ в день!", "Спам со ссылкой")
+
+@dp.callback_query(lambda c: c.data == "test_discrimination")
+async def test_discrimination_message(callback_query: types.CallbackQuery):
+    await run_agent_test(callback_query, "Все эти негры должны убираться отсюда!", "Расовая дискриминация")
+
+async def run_agent_test(callback_query: types.CallbackQuery, test_message: str, test_type: str):
+    """Запускает тест агентов с сообщением"""
+    await callback_query.answer()
+    
+    if not is_group_chat(callback_query.message.chat.type):
+        await callback_query.message.edit_text("❌ Этот бот работает только в групповых чатах.")
+        return
+    
+    # Показываем процесс тестирования
+    await callback_query.message.edit_text(
+        f"<b>🧪 Тестирование: {test_type}</b>\n\n"
+        f"<b>📝 Сообщение:</b>\n<i>{test_message}</i>\n\n"
+        f"⏳ Отправляем агентам 3, 4 и 5...",
+        parse_mode="HTML"
+    )
+    
+    # Запускаем тест
+    user_id = callback_query.from_user.id
+    username = callback_query.from_user.username or "test_user"
+    chat_id = callback_query.message.chat.id
+    
+    result = test_agents_with_message(test_message, user_id, username, chat_id)
+    
+    if "error" in result:
+        result_text = f"<b>❌ Ошибка тестирования</b>\n\n{result['error']}"
+    else:
+        result_text = (
+            f"<b>✅ Тест запущен!</b>\n\n"
+            f"<b>📝 Тип:</b> {test_type}\n"
+            f"<b>💬 Сообщение:</b>\n<i>{test_message[:100]}{'...' if len(test_message) > 100 else ''}</i>\n\n"
+            f"<b>🆔 ID теста:</b> <code>{result.get('message_id', 'N/A')}</code>\n\n"
+            f"Сообщение отправлено агентам 3, 4 и 5 для анализа.\n"
+            f"Результаты будут видны в разделе \"Нарушения\" через несколько секунд."
+        )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ Посмотреть нарушения", callback_data="negative_messages")],
+        [InlineKeyboardButton(text="🧪 Другие тесты", callback_data="test_agents")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+    ])
+    
+    await callback_query.message.edit_text(result_text, reply_markup=keyboard, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data == "back_to_menu")
+async def back_to_menu(callback_query: types.CallbackQuery):
+    """Возврат в главное меню"""
+    await callback_query.answer()
+    
+    if not is_group_chat(callback_query.message.chat.type):
+        await callback_query.message.edit_text(
+            "<b>TeleGuard Bot</b>\n\n"
+            "<b>Ошибка:</b> Этот бот работает только в групповых чатах.",
+            parse_mode="HTML"
+        )
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Состояние агентов", callback_data="status_agents")],
+        [InlineKeyboardButton(text="💬 Сообщения чата", callback_data="chat_messages")],
+        [InlineKeyboardButton(text="⚠️ Нарушения", callback_data="negative_messages")],
+        [InlineKeyboardButton(text="🧪 Тест агентов", callback_data="test_agents")],
+        [InlineKeyboardButton(text="➕ Добавить чат", callback_data="add_chat")]
+    ])
+    
+    chat_title = getattr(callback_query.message.chat, 'title', "Без названия")
+    
+    welcome_text = (
+        f"<b>🤖 TeleGuard Bot - Система модерации</b>\n\n"
+        f"<b>📍 Чат:</b> {chat_title}\n"
+        f"<b>🆔 ID:</b> <code>{callback_query.message.chat.id}</code>\n"
+        f"<b>📝 Тип:</b> {callback_query.message.chat.type}\n\n"
+        f"<b>🔧 Функции:</b>\n"
+        f"• <b>📊 Состояние агентов</b> - проверка работы агентов 1-5\n"
+        f"• <b>💬 Сообщения чата</b> - последние обработанные сообщения\n"
+        f"• <b>⚠️ Нарушения</b> - найденные нарушения\n"
+        f"• <b>🧪 Тест агентов</b> - тестирование с примерами\n"
+        f"• <b>➕ Добавить чат</b> - регистрация для модерации\n\n"
+        f"<i>🤖 Работает на Mistral AI</i>"
+    )
+    
+    await callback_query.message.edit_text(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
+# ============================================================================
+# ОБРАБОТЧИК СООБЩЕНИЙ (ОСНОВНАЯ ЛОГИКА)
 # ============================================================================
 @dp.message()
-async def handle_message(message: types.Message, state: FSMContext):
-    """Обработка всех сообщений (только из групповых чатов)"""
+async def handle_message(message: types.Message):
+    """Обработчик всех сообщений"""
     try:
-        # Если пользователь в состоянии ввода правил, не обрабатываем как обычное сообщение
-        current_state = await state.get_state()
-        if current_state == RulesState.waiting_for_rules:
-            return
-        
-        # ПРОВЕРЯЕМ: обрабатываем только сообщения из групповых чатов
-        if not should_process_chat(message):
-            logger.info(f"🚫 Сообщение из личного чата {message.chat.id} пропущено")
-            return
-        
-        # Сохраняем сообщение в базу данных ТОЛЬКО если это групповой чат
+        # Добавляем чат в БД если его нет
         db_session = get_db_session()
-        
         chat = db_session.query(Chat).filter_by(tg_chat_id=str(message.chat.id)).first()
         if not chat:
             chat = Chat(
                 tg_chat_id=str(message.chat.id),
                 title=getattr(message.chat, 'title', None),
-                chat_type=message.chat.type,
-                added_at=get_moscow_time()
+                chat_type=message.chat.type
             )
             db_session.add(chat)
             db_session.commit()
         
-        # Сохраняем сообщение с московским временем
-        msg = Message(
-            chat_id=chat.id,
-            message_id=message.message_id,
-            sender_username=message.from_user.username,
-            sender_id=message.from_user.id,
-            message_text=message.text,
-            message_link=f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.message_id}",
-            created_at=get_moscow_time()
-        )
-        db_session.add(msg)
-        db_session.commit()
+        # Обрабатываем только групповые чаты
+        if not should_process_chat(message):
+            logger.info(f"Пропущен чат {message.chat.id} - не групповой")
+            return
         
-        # Отправляем в очередь Агента 1 для обработки (если это не команда)
+        # Отправляем сообщение в очередь агента 1 через Redis
         if redis_client and message.text and not message.text.startswith('/'):
-            from config import QUEUE_AGENT_1_INPUT
-            
             test_data = {
                 "message": message.text,
                 "user_id": message.from_user.id,
-                "username": message.from_user.username or f"user_{message.from_user.id}",
+                "username": message.from_user.username or f"user{message.from_user.id}",
                 "chat_id": message.chat.id,
                 "message_id": message.message_id,
                 "message_link": f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.message_id}"
             }
             
             test_json = json.dumps(test_data, ensure_ascii=False)
-            redis_client.rpush(QUEUE_AGENT_1_INPUT, test_json)
-            logger.info(f"📤 Сообщение из группового чата {message.chat.id} отправлено в очередь агента 1")
+            redis_client.rpush("queue:agent1:input", test_json)
+            logger.info(f"📤 Сообщение от {message.chat.id} отправлено агенту 1")
+        
+        # Сохраняем сообщение в БД
+        msg = Message(
+            chat_id=chat.id,
+            message_id=message.message_id,
+            sender_username=message.from_user.username,
+            sender_id=message.from_user.id,
+            message_text=message.text,
+            message_link=f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.message_id}"
+        )
+        db_session.add(msg)
+        db_session.commit()
         
         db_session.close()
         
-        logger.info(f"💾 Сообщение из группового чата {message.chat.id} сохранено в БД: {message.text[:50] if message.text else 'No text'}...")
+        logger.info(f"✅ Обработано сообщение из чата {message.chat.id}: {message.text[:50] if message.text else 'No text'}...")
         
     except Exception as e:
-        logger.error(f"❌ Ошибка сохранения сообщения: {e}")
+        logger.error(f"❌ Ошибка обработки сообщения: {e}")
 
 # ============================================================================
-# ЗАПУСК БОТА
+# ПРОВЕРКА ПОДКЛЮЧЕНИЙ
 # ============================================================================
-async def main():
-    logger.info("🚀 Запуск TeleGuard Bot (с конфигурацией из .env)...")
-    
-    # Проверяем подключения
+async def startup_checks():
+    """Проверки при запуске"""
     try:
         db_session = get_db_session()
         db_session.close()
-        logger.info("✅ Подключение к PostgreSQL работает")
+        logger.info("✅ Подключение к PostgreSQL успешно")
     except Exception as e:
         logger.error(f"❌ Ошибка подключения к PostgreSQL: {e}")
+
+# ============================================================================
+# ГЛАВНАЯ ФУНКЦИЯ
+# ============================================================================
+async def main():
+    logger.info("🚀 Запуск TeleGuard Bot (версия 2.5 - исправленные кнопки)...")
     
-    # Показываем текущее московское время
-    current_time_msk = get_moscow_time_str("%d.%m.%Y %H:%M:%S")
-    logger.info(f"🕐 Текущее время (MSK): {current_time_msk}")
-    logger.info(f"🧠 ИИ провайдер: OpenAI API (GPT-3.5-turbo)")
-    logger.info(f"⚙️ Конфигурация: Environment variables (.env)")
-    logger.info(f"🔒 Только администраторы групп могут использовать бота")
-    logger.info(f"📋 Поддержка кастомных правил для каждого чата")
+    # Проверки при запуске
+    await startup_checks()
     
-    # Запускаем бота
+    # Запуск бота
     await dp.start_polling(bot)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
