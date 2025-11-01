@@ -2,7 +2,9 @@
 # Зависимости Python для Mistral AI версии
 
 # Mistral AI API
-mistralai>=0.4.0
+mistralai>=0.4.2
+
+openai
 
 # Telegram Bot
 aiogram>=3.0.0
