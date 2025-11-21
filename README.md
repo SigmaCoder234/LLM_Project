@@ -60,18 +60,18 @@ cp .env.example .env
 ### 2. Заполните переменные окружения в .env:
 ```bash
 # Mistral AI Configuration
-MISTRAL_API_KEY=ygeDdoQrYFW5iM8aVw2p18pPZ1se30ow
+MISTRAL_API_KEY=YOUR_API_KEY
 
 # Telegram Bot Configuration  
-TELEGRAM_BOT_TOKEN=ваш-telegram-bot-token
+TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_API_TOKEN
 
 # Database Configuration
 POSTGRES_URL=postgresql://user:password@host:port/database
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-POSTGRES_USER=tguser
-POSTGRES_PASSWORD=ваш_пароль
-POSTGRES_DB=teleguard_db
+POSTGRES_USER=YOUR_USER
+POSTGRES_PASSWORD=YOUR_PASSWORD
+POSTGRES_DB=YOUR_DB_NAME
 
 # Redis Configuration
 REDIS_HOST=localhost
@@ -91,7 +91,7 @@ MISTRAL_MODEL=mistral-large-latest
 
 ### 3. Установите зависимости:
 ```bash
-pip install mistralai aiogram sqlalchemy psycopg2-binary redis requests fastapi uvicorn python-dotenv
+pip install mistralai openai aiogram sqlalchemy psycopg2-binary redis requests fastapi uvicorn python-dotenv
 ```
 
 ### 4. Подготовьте базу данных:
@@ -114,7 +114,7 @@ python3 config.py
 
 ### Способ 1: Последовательный запуск (рекомендуется)
 ```bash
-# Терминал 1 - Агент №1 (Координатор)
+# Терминал 1 - Агент №1 (Координатор Mistral AI)
 python3 first_agent.py
 
 # Терминал 2 - Агент №2 (Анализатор Mistral AI v2.0)
@@ -123,13 +123,15 @@ python3 second_agent.py
 # Терминал 3 - Агент №3 (Mistral AI модератор v2.0)
 python3 third_agent.py
 
-# Терминал 4 - Агент №4 (Эвристический + Mistral AI)
+# Терминал 4 - Агент №4 (Эвристический + OpenAI AI)
 python3 fourth_agent.py
 
 # Терминал 5 - Агент №5 (Арбитр Mistral AI v2.0)
 python3 fifth_agent.py
 
-# Терминал 6 - Telegram Bot (только админы)
+# Терминал 6 - Агент №6 (Анализ медиа файлов и аватарок юзеров sightengine)
+
+# Терминал 7 - Telegram Bot (Отображение в групповом чате)
 python3 teleguard_bot.py
 ```
 
@@ -173,7 +175,7 @@ screen -list
 curl http://localhost:8001/health  # Агент 1
 curl http://localhost:8002/health  # Агент 2 (Mistral AI)
 curl http://localhost:8003/health  # Агент 3 (Mistral AI)
-curl http://localhost:8004/health  # Агент 4 (Mistral AI резерв)
+curl http://localhost:8004/health  # Агент 4 (OpenAI резерв)
 curl http://localhost:8005/health  # Агент 5 (Mistral AI арбитр)
 ```
 
@@ -183,7 +185,7 @@ curl http://localhost:8005/health  # Агент 5 (Mistral AI арбитр)
   "status": "online",
   "agent_id": 3,
   "ai_provider": "Mistral AI (mistral-large-latest)",
-  "prompt_version": "v2.0 - новый формат",
+  "prompt_version": "v2.0",
   "configuration": "Environment variables (.env)",
   "default_rules": ["Запрещена расовая дискриминация", "Запрещены ссылки"],
   "uptime_seconds": 1234
@@ -209,11 +211,12 @@ TeleGuard-Mistral/
 ├── first_agent.py      # Агент №1 - Координатор (.env)
 ├── second_agent.py     # Агент №2 - Анализатор (Mistral AI)
 ├── third_agent.py      # Агент №3 - Mistral AI модератор
-├── fourth_agent.py     # Агент №4 - Эвристика + Mistral AI
+├── fourth_agent.py     # Агент №4 - Эвристика + OpenAI
 ├── fifth_agent.py      # Агент №5 - Арбитр Mistral AI
+├── sixth_agent.py      # Агент №6 - Анализ медиа файлов и аватарок юзеров
 ├── teleguard_bot.py    # Telegram бот (.env + Mistral AI)
 ├── README.md           # Документация (Mistral AI версия)
-└── requirements.txt    # Зависимости Python (Mistral AI)
+└── requirements.txt    # Зависимости Python (Mistral AI + OpenAI)
 ```
 
 ## 📋 Особенности Mistral AI конфигурации
