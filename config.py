@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 # Загружаем переменные из .env файла
 load_dotenv()
 
+
 # ============================================================================
 # ФУНКЦИИ ВСПОМОГАТЕЛЬНЫЕ
 # ============================================================================
@@ -20,12 +21,14 @@ def get_env_bool(key: str, default: bool = False) -> bool:
     value = os.getenv(key, str(default)).lower()
     return value in ('true', '1', 'yes', 'on')
 
+
 def get_env_int(key: str, default: int = 0) -> int:
     """Получить integer значение из переменной окружения"""
     try:
         return int(os.getenv(key, str(default)))
     except ValueError:
         return default
+
 
 # ============================================================================
 # AI PROVIDER DETECTION (АВТООПРЕДЕЛЕНИЕ)
@@ -130,57 +133,52 @@ QUEUE_AGENT_5_INPUT = "queue:agent5:input"
 DEFAULT_RULES = [
     "Запрещена расовая дискриминация",
     "Запрещены ссылки",
-    "Запрещена нецензурная лексика и оскорбления",  # ← НОВОЕ ПРАВИЛО
-    "Запрещены угрозы и призывы к насилию"          # ← НОВОЕ ПРАВИЛО
+    "Запрещена нецензурная лексика и оскорбления",
+    "Запрещены угрозы и призывы к насилию"
 ]
 
 # ============================================================================
 # AGENT PORTS
 # ============================================================================
 AGENT_PORTS = {
-    1: 8001,  # Координатор
-    2: 8002,  # Анализатор
-    3: 8003,  # Модератор ИИ
-    4: 8004,  # Эвристический + ИИ
-    5: 8005   # Арбитр
+    1: 8001,
+    2: 8002,
+    3: 8003,
+    4: 8004,
+    5: 8005
 }
 
 # ============================================================================
 # AI SPECIFIC CONFIGURATION
 # ============================================================================
 if AI_PROVIDER == 'openai':
-    # OpenAI Configuration
     OPENAI_MODEL = CURRENT_MODEL
     OPENAI_GENERATION_PARAMS = {
         "temperature": 0.1,
         "max_tokens": 300
     }
-    
-    # Экспорт для совместимости
     OPENAI_API_KEY = API_KEY
-    
+
 elif AI_PROVIDER == 'mistral':
-    # Mistral AI Configuration
     MISTRAL_MODEL = CURRENT_MODEL
     MISTRAL_API_BASE = "https://api.mistral.ai/v1"
     MISTRAL_SUPPORTED_MODELS = [
         "mistral-large-latest",
-        "mistral-medium-latest", 
+        "mistral-medium-latest",
         "mistral-small-latest",
         "open-mistral-7b",
         "open-mistral-8x7b",
         "open-mistral-8x22b"
     ]
-    
+
     MISTRAL_GENERATION_PARAMS = {
         "temperature": 0.1,
         "max_tokens": 300,
         "top_p": 0.9,
         "safe_mode": False
     }
-    
-    # Экспорт для совместимости
     MISTRAL_API_KEY = API_KEY
+
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -188,22 +186,22 @@ elif AI_PROVIDER == 'mistral':
 def setup_logging(agent_name: str = "SYSTEM"):
     """Настройка логирования для агента"""
     numeric_level = getattr(logging, LOG_LEVEL, logging.INFO)
-    
+
     logging.basicConfig(
         level=numeric_level,
         format=f'[%(asctime)s] [{agent_name}] %(levelname)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    
-    # Подавляем избыточные логи от внешних библиотек
+
     if not DEBUG:
         logging.getLogger('httpx').setLevel(logging.WARNING)
         logging.getLogger('openai').setLevel(logging.WARNING)
         logging.getLogger('mistralai').setLevel(logging.WARNING)
         logging.getLogger('requests').setLevel(logging.WARNING)
         logging.getLogger('urllib3').setLevel(logging.WARNING)
-    
+
     return logging.getLogger(agent_name)
+
 
 # ============================================================================
 # VALIDATION
@@ -211,41 +209,38 @@ def setup_logging(agent_name: str = "SYSTEM"):
 def validate_config():
     """Проверка корректности конфигурации"""
     errors = []
-    
-    # Проверяем API ключи
+
     if AI_PROVIDER == 'openai':
         if not OPENAI_API_KEY:
             errors.append("OPENAI_API_KEY обязателен для OpenAI провайдера")
         elif len(OPENAI_API_KEY) < 20:
             errors.append("OPENAI_API_KEY кажется слишком коротким")
-    
+
     elif AI_PROVIDER == 'mistral':
         if not MISTRAL_API_KEY:
             errors.append("MISTRAL_API_KEY обязателен для Mistral AI провайдера")
         elif len(MISTRAL_API_KEY) < 20:
             errors.append("MISTRAL_API_KEY кажется слишком коротким")
-    
-    # Проверяем Telegram токен
+
     if not TELEGRAM_BOT_TOKEN:
         errors.append("TELEGRAM_BOT_TOKEN обязателен")
     elif ':' not in TELEGRAM_BOT_TOKEN:
         errors.append("TELEGRAM_BOT_TOKEN имеет неверный формат")
-    
-    # Проверяем PostgreSQL
+
     if not POSTGRES_URL:
         errors.append("POSTGRES_URL обязателен")
-    
-    # Проверяем порты
+
     if not (1 <= REDIS_PORT <= 65535):
         errors.append(f"REDIS_PORT должен быть в диапазоне 1-65535, получен: {REDIS_PORT}")
-    
+
     if not (1 <= POSTGRES_PORT <= 65535):
         errors.append(f"POSTGRES_PORT должен быть в диапазоне 1-65535, получен: {POSTGRES_PORT}")
-    
+
     if errors:
         raise ValueError("Ошибки конфигурации:\n" + "\n".join(f"- {error}" for error in errors))
-    
+
     return True
+
 
 # ============================================================================
 # REDIS CONNECTION CONFIG
@@ -259,6 +254,7 @@ def get_redis_config():
         "password": REDIS_PASSWORD,
         "decode_responses": True
     }
+
 
 # ============================================================================
 # AI CLIENT CONFIG
@@ -281,8 +277,9 @@ def get_ai_config():
             "generation_params": MISTRAL_GENERATION_PARAMS
         }
 
+
 # ============================================================================
-# ЭКСПОРТ КОНФИГУРАЦИИ
+# CONFIG SUMMARY
 # ============================================================================
 def get_config_summary():
     """Получить сводку конфигурации (без секретных данных)"""
@@ -304,20 +301,19 @@ def get_config_summary():
         "default_rules": DEFAULT_RULES
     }
 
+
 # ============================================================================
 # ИНИЦИАЛИЗАЦИЯ
 # ============================================================================
-# Проверяем конфигурацию при импорте
 try:
     validate_config()
 except ValueError as e:
     print(f"❌ Ошибка конфигурации: {e}")
     exit(1)
 
-# Настраиваем базовое логирование
 logger = setup_logging("CONFIG")
 logger.info(f"✅ Конфигурация загружена: {AI_PROVIDER.upper()} ({CURRENT_MODEL})")
-print(logger_msg)  # Печатаем сообщение об автоопределении
+print(logger_msg)
 
 if DEBUG:
     logger.debug("🔧 Режим отладки включен")
@@ -327,48 +323,33 @@ if DEBUG:
 # ЭКСПОРТИРУЕМЫЕ ПЕРЕМЕННЫЕ
 # ============================================================================
 __all__ = [
-    # AI API Keys (universal)
     'AI_PROVIDER',
     'API_KEY',
     'CURRENT_MODEL',
-    
-    # OpenAI (if used)
     'OPENAI_API_KEY',
     'OPENAI_MODEL',
     'OPENAI_GENERATION_PARAMS',
-    
-    # Mistral AI (if used)
     'MISTRAL_API_KEY',
     'MISTRAL_MODEL',
     'MISTRAL_API_BASE',
     'MISTRAL_GENERATION_PARAMS',
-    
-    # Telegram
     'TELEGRAM_BOT_TOKEN',
     'TELEGRAM_API_URL',
-    
-    # Database
     'POSTGRES_URL',
     'POSTGRES_HOST',
-    'POSTGRES_PORT', 
+    'POSTGRES_PORT',
     'POSTGRES_USER',
     'POSTGRES_PASSWORD',
     'POSTGRES_DB',
-    
-    # Redis
     'REDIS_HOST',
     'REDIS_PORT',
     'REDIS_DB',
     'REDIS_PASSWORD',
-    
-    # Application
     'DEBUG',
     'LOG_LEVEL',
     'MSK_TIMEZONE',
     'DEFAULT_RULES',
     'AGENT_PORTS',
-    
-    # Queues
     'QUEUE_AGENT_1_INPUT',
     'QUEUE_AGENT_2_INPUT',
     'QUEUE_AGENT_3_INPUT',
@@ -376,8 +357,6 @@ __all__ = [
     'QUEUE_AGENT_4_INPUT',
     'QUEUE_AGENT_4_OUTPUT',
     'QUEUE_AGENT_5_INPUT',
-    
-    # Functions
     'setup_logging',
     'validate_config',
     'get_redis_config',
@@ -385,7 +364,9 @@ __all__ = [
     'get_config_summary'
 ]
 
-# Проверяем при запуске как скрипт
+# ============================================================================
+# ТОЧКА ВХОДА (если запускается как скрипт)
+# ============================================================================
 if __name__ == "__main__":
     print("\n🤖 TeleGuard - Универсальная конфигурация")
     print("=" * 50)
@@ -398,6 +379,6 @@ if __name__ == "__main__":
     print(f"🕐 Часовой пояс: {TIMEZONE_NAME}")
     print(f"🔧 Режим отладки: {'✅ Включен' if DEBUG else '❌ Выключен'}")
     print("\n✅ Конфигурация валидна!")
-    
+
     summary = get_config_summary()
     print(f"\n📊 Сводка: {summary}")
