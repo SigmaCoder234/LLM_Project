@@ -27,8 +27,8 @@ from sqlalchemy.orm import relationship
 # КОНФИГУРАЦИЯ
 # ============================================================================
 
-TOKEN = "8320009669:AAHiVLu-Em8EOXBNHYrJ0UhVX3mMMTm8Sg"
-POSTGRES_URL = "postgresql+psycopg2://tg_user:mnvm71@176.108.248.211:5432/teleguard?sslmode=disable"
+TOKEN = "8320009669:AAHadwhYKIg6qcwAwJabsBEOO7srfWwMiXE"
+POSTGRES_URL = "postgresql+psycopg2://tg_user:mnvm71@localhost:5432/teleguard?sslmode=disable"
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
 REDIS_DB = 0

@@ -26,7 +26,7 @@ pytz==2023.3
 
 # Utils
 python-dotenv==1.0.0
-pydantic==2.5.0
+pydantic>=2.5.0,<2.6
 
 # Logging & Monitoring
 python-json-logger==2.0.7

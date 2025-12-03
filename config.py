@@ -13,7 +13,7 @@ from pathlib import Path
 # TELEGRAM BOT
 # ============================================================================
 
-TELEGRAM_BOT_TOKEN = "8320009669:AAHiVLu-Em8EOXBNHYrJ0UhVX3mMMTm8Sg"
+TELEGRAM_BOT_TOKEN = "8320009669:AAHadwhYKIg6qcwAwJabsBEOO7srfWwMiXE"
 TELEGRAM_API_URL = "https://api.telegram.org"
 
 # ============================================================================
@@ -22,12 +22,10 @@ TELEGRAM_API_URL = "https://api.telegram.org"
 
 DB_USER = "tg_user"
 DB_PASSWORD = "mnvm71"
-DB_HOST = "176.108.248.211"
+DB_HOST = "localhost"
 DB_PORT = 5432
 DB_NAME = "teleguard"
-
-POSTGRES_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=disable"
-
+POSTGRES_URL = "postgresql+psycopg2://tg_user:mnvm71@localhost:5432/teleguard?sslmode=disable"
 # ============================================================================
 # REDIS
 # ============================================================================
@@ -186,3 +184,81 @@ if __name__ == "__main__":
     print(f"✅ Правила: {len(DEFAULT_RULES)} правил")
     print(f"✅ Агенты: {len(AGENT_PORTS)} агентов")
     print("=" * 70)
+
+# ============================================================================
+# ОПРЕДЕЛЕНИЕ ДЕЙСТВИЯ МОДЕРАЦИИ (БАН, МУТ, ВАРН)
+# ============================================================================
+
+def determine_action(violation_type: str, severity: int, confidence: float) -> dict:
+    """
+    Определяет действие модерации по типу нарушения, серьезности и уверенности.
+    
+    Возвращает:
+    {
+        "action": "ban" | "mute" | "warn" | "delete" | "none",
+        "duration": int (в минутах, 0 = навсегда),
+        "reason": str,
+        "severity_level": "critical" | "high" | "medium" | "low"
+    }
+    """
+    
+    actions = {
+        "profanity": {
+            "low": {"action": "warn", "duration": 0, "severity": "low"},
+            "medium": {"action": "mute", "duration": 60, "severity": "medium"},
+            "high": {"action": "mute", "duration": 1440, "severity": "high"},
+            "critical": {"action": "ban", "duration": 0, "severity": "critical"}
+        },
+        "spam": {
+            "low": {"action": "delete", "duration": 0, "severity": "low"},
+            "medium": {"action": "warn", "duration": 0, "severity": "medium"},
+            "high": {"action": "mute", "duration": 120, "severity": "high"},
+            "critical": {"action": "ban", "duration": 0, "severity": "critical"}
+        },
+        "discrimination": {
+            "low": {"action": "warn", "duration": 0, "severity": "low"},
+            "medium": {"action": "mute", "duration": 1440, "severity": "medium"},
+            "high": {"action": "ban", "duration": 0, "severity": "high"},
+            "critical": {"action": "ban", "duration": 0, "severity": "critical"}
+        },
+        "flood": {
+            "low": {"action": "delete", "duration": 0, "severity": "low"},
+            "medium": {"action": "warn", "duration": 0, "severity": "medium"},
+            "high": {"action": "mute", "duration": 60, "severity": "high"},
+            "critical": {"action": "mute", "duration": 1440, "severity": "critical"}
+        },
+        "harassment": {
+            "low": {"action": "warn", "duration": 0, "severity": "low"},
+            "medium": {"action": "mute", "duration": 720, "severity": "medium"},
+            "high": {"action": "ban", "duration": 0, "severity": "high"},
+            "critical": {"action": "ban", "duration": 0, "severity": "critical"}
+        }
+    }
+    
+    # Определяем уровень серьезности по severity (0-10)
+    if severity >= 9:
+        level = "critical"
+    elif severity >= 7:
+        level = "high"
+    elif severity >= 5:
+        level = "medium"
+    else:
+        level = "low"
+    
+    # Корректируем уровень по уверенности
+    if confidence < 0.5:
+        if level == "critical":
+            level = "high"
+        elif level == "high":
+            level = "medium"
+    
+    # Получаем действие из таблицы
+    violation_actions = actions.get(violation_type, actions["spam"])
+    action_info = violation_actions.get(level, {"action": "none", "duration": 0, "severity": level})
+    
+    return {
+        "action": action_info["action"],
+        "duration": action_info["duration"],
+        "reason": f"Нарушение: {violation_type.upper()} (уровень: {level})",
+        "severity_level": level
+    }

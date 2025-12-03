@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-АГЕНТ №5 — Арбитр многоагентной системы (Mistral AI исправленная версия v0.4.2)
+АГЕНТ №5 — Арбитр многоагентной системы с определением финального действия
 """
 
 import json
@@ -11,67 +12,63 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import threading
 
-# Mistral AI импорты - исправленная версия для 0.4.2
+# Mistral AI импорты
 try:
-    from mistralai.client import MistralClient
-    from mistralai.models.chat_completion import ChatMessage
+    from mistralai import Mistral
+    from mistralai import UserMessage, SystemMessage
     MISTRAL_IMPORT_SUCCESS = True
-    MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
+    MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
 except ImportError:
     try:
-        # Fallback для новой версии
-        from mistralai import Mistral as MistralClient
-        from mistralai import UserMessage, SystemMessage
-        def ChatMessage(role, content): return {"role": role, "content": content}
+        from mistralai.client import MistralClient as Mistral
+        from mistralai.models.chat_completion import ChatMessage
+        def UserMessage(content): return {"role": "user", "content": content}
+        def SystemMessage(content): return {"role": "system", "content": content}
         MISTRAL_IMPORT_SUCCESS = True
-        MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
+        MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
     except ImportError:
         print("❌ Не удалось импортировать Mistral AI")
         MISTRAL_IMPORT_SUCCESS = False
         MISTRAL_IMPORT_VERSION = "none"
-        # Заглушки
-        class MistralClient:
+        class Mistral:
             def __init__(self, api_key): pass
-            def chat(self, **kwargs): 
+            def chat(self, **kwargs):
                 raise ImportError("Mistral AI не установлен")
-        def ChatMessage(role, content): return {"role": role, "content": content}
+        def UserMessage(content): return {"role": "user", "content": content}
+        def SystemMessage(content): return {"role": "system", "content": content}
 
-# Импортируем централизованную конфигурацию
+# Импортируем конфигурацию
 from config import (
     MISTRAL_API_KEY,
     MISTRAL_MODEL,
     MISTRAL_GENERATION_PARAMS,
-    TELEGRAM_BOT_TOKEN,
-    TELEGRAM_API_URL,
     get_redis_config,
     QUEUE_AGENT_5_INPUT,
     AGENT_PORTS,
     DEFAULT_RULES,
-    setup_logging
+    setup_logging,
+    determine_action
 )
 
 # ============================================================================
 # ЛОГИРОВАНИЕ
 # ============================================================================
+
 logger = setup_logging("АГЕНТ 5")
 
-# Проверяем импорты при запуске
 if MISTRAL_IMPORT_SUCCESS:
     logger.info(f"✅ Mistral AI импортирован успешно ({MISTRAL_IMPORT_VERSION})")
 else:
-    logger.error("❌ Mistral AI не импортирован, работа в режиме заглушки")
+    logger.error("❌ Mistral AI не импортирован")
 
 # ============================================================================
 # ИНИЦИАЛИЗАЦИЯ MISTRAL AI
 # ============================================================================
+
 if MISTRAL_IMPORT_SUCCESS and MISTRAL_API_KEY:
     try:
-        mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
+        mistral_client = Mistral(api_key=MISTRAL_API_KEY)
         logger.info("✅ Mistral AI клиент создан")
     except Exception as e:
         logger.error(f"❌ Ошибка создания Mistral AI клиента: {e}")
@@ -81,23 +78,39 @@ else:
     logger.warning("⚠️ Mistral AI клиент не создан")
 
 # ============================================================================
-# КЛАССЫ ДАННЫХ ДЛЯ АРБИТРАЖА
+# КЛАССЫ ДАННЫХ
 # ============================================================================
+
 class VerdictType(Enum):
     APPROVE = "approve"
     BAN = "ban"
+    MUTE = "mute"
+    WARN = "warn"
+    DELETE = "delete"
     UNCERTAIN = "uncertain"
 
 @dataclass
 class AgentVerdict:
     agent_id: int
-    ban: bool
+    action: str  # "ban", "mute", "warn", "delete", "none"
+    action_duration: int  # минуты
     reason: str
     confidence: float
+    violation_type: str
+    severity: int
     timestamp: datetime
     
     def to_verdict_type(self) -> VerdictType:
-        return VerdictType.BAN if self.ban else VerdictType.APPROVE
+        if self.action == "ban":
+            return VerdictType.BAN
+        elif self.action == "mute":
+            return VerdictType.MUTE
+        elif self.action == "warn":
+            return VerdictType.WARN
+        elif self.action == "delete":
+            return VerdictType.DELETE
+        else:
+            return VerdictType.APPROVE
 
 @dataclass
 class Agent5Decision:
@@ -107,218 +120,313 @@ class Agent5Decision:
     user_id: int
     username: str
     message_text: str
-    final_verdict: VerdictType
-    confidence: float
+    final_action: str
+    final_action_duration: int
+    final_confidence: float
     reasoning: str
-    agent3_verdict: VerdictType
-    agent4_verdict: VerdictType
+    agent3_action: str
+    agent4_action: str
+    agent3_severity: int
+    agent4_severity: int
     was_conflict: bool
+    conflict_resolved_by: str
     timestamp: datetime
 
 # ============================================================================
-# АРБИТРАЖНАЯ ЛОГИКА С MISTRAL AI (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+# АРБИТРАЖНАЯ ЛОГИКА
 # ============================================================================
+
 class ModerationArbiter:
-    """
-    Арбитр для разрешения конфликтов между агентами 3 и 4 с использованием Mistral AI (исправленная версия)
-    """
+    """Арбитр для разрешения конфликтов между агентами 3 и 4"""
     
     def __init__(self):
         self.processed_count = 0
     
     def has_conflict(self, agent3: AgentVerdict, agent4: AgentVerdict) -> bool:
         """Проверка наличия конфликта между агентами"""
-        # Конфликт если вердикты разные или уверенность низкая
-        verdicts_differ = agent3.ban != agent4.ban
-        low_confidence = agent3.confidence < 0.7 or agent4.confidence < 0.7
-        return verdicts_differ or low_confidence
+        
+        # Конфликт если действия разные (ban vs none, mute vs warn и т.д.)
+        actions_differ = agent3.action != agent4.action
+        
+        # Или если уверенность одного из них низкая
+        low_confidence = agent3.confidence < 0.65 or agent4.confidence < 0.65
+        
+        # Или если серьезность сильно отличается
+        severity_diff = abs(agent3.severity - agent4.severity) > 3
+        
+        return actions_differ or low_confidence or severity_diff
     
-    def resolve_conflict_with_mistral(self, agent3: AgentVerdict, agent4: AgentVerdict, message_text: str, rules: list) -> tuple:
-        """Разрешение конфликта между агентами с помощью Mistral AI (исправленная версия)"""
+    def resolve_conflict_with_mistral(
+        self, 
+        agent3: AgentVerdict, 
+        agent4: AgentVerdict, 
+        message_text: str, 
+        rules: List[str]
+    ) -> tuple:
+        """Разрешение конфликта между агентами с помощью Mistral AI"""
+        
         logger.info("🤖 Разрешение конфликта с помощью Mistral AI...")
         
-        # Проверяем доступность Mistral AI
         if not MISTRAL_IMPORT_SUCCESS or not mistral_client:
-            logger.warning("⚠️ Mistral AI недоступен, используем заглушку")
+            logger.warning("⚠️ Mistral AI недоступен, используем резервный алгоритм")
             return self.resolve_conflict_fallback(agent3, agent4, message_text)
         
         try:
-            # Если правил нет, используем стандартные
             if not rules:
                 rules = DEFAULT_RULES
             
             rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
             
-            system_message = f"""Ты — модератор группового чата. Твоя задача — получать сообщения из чата и анализировать их с точки зрения соответствия правилам. По каждому сообщению выноси вердикт: «банить» или «не банить», указывая причину решения и степень уверенности в процентах.
+            system_message = f"""Ты — модератор Telegram чата. Два агента дали разные решения.
 
 ПРАВИЛА ЧАТА:
 {rules_text}
 
-Два других агента дали разные вердикты по этому сообщению:
+АНАЛИЗ АГЕНТОВ:
 
-АГЕНТ 3 (Mistral AI модератор):
-- Решение: {"банить" if agent3.ban else "не банить"}  
+АГЕНТ 3 (Mistral AI):
+- Действие: {agent3.action}
+- Серьезность: {agent3.severity}/10
 - Уверенность: {agent3.confidence*100:.0f}%
-- Причина: {agent3.reason}
+- Причина: {agent3.reason[:200]}
 
-АГЕНТ 4 (Эвристический модератор):
-- Решение: {"банить" if agent4.ban else "не банить"}
-- Уверенность: {agent4.confidence*100:.0f}%  
-- Причина: {agent4.reason}
+АГЕНТ 4 (Эвристика):
+- Действие: {agent4.action}
+- Серьезность: {agent4.severity}/10
+- Уверенность: {agent4.confidence*100:.0f}%
+- Причина: {agent4.reason[:200]}
 
-Проанализируй сообщение и прими окончательное решение.
+ТВОЯ ЗАДАЧА:
+1. Проанализируй оба решения
+2. Прими окончательное решение
+3. Определи действие: ban/mute/warn/delete/none
+4. Если mute - укажи длительность в минутах
+5. Объясни решение
 
-Формат вывода:
-Вердикт: <банить/не банить>
-Причина: <текст причины>
-Уверенность: <число от 0 до 100>%"""
+Формат ответа:
+ФИНАЛЬНОЕ ДЕЙСТВИЕ: [ban/mute/warn/delete/none]
+ДЛИТЕЛЬНОСТЬ: [минуты или 0 для бана]
+УВЕРЕННОСТЬ: [0-100]
+ПРИЧИНА: [текст]"""
             
-            user_message = f"Сообщение пользователя:\n\"{message_text}\""
+            user_message_text = f'Сообщение: "{message_text}"'
             
-            messages = [
-                ChatMessage(role="system", content=system_message),
-                ChatMessage(role="user", content=user_message)
-            ]
+            # Создаем сообщения
+            if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
+                messages = [
+                    SystemMessage(content=system_message),
+                    UserMessage(content=user_message_text)
+                ]
+            else:
+                messages = [
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": user_message_text}
+                ]
             
-            response = mistral_client.chat(
-                model=MISTRAL_MODEL,
-                messages=messages,
-                temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
-                max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 300),
-                top_p=MISTRAL_GENERATION_PARAMS.get("top_p", 0.9)
-            )
+            # Вызываем API
+            if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
+                response = mistral_client.chat.complete(
+                    model=MISTRAL_MODEL,
+                    messages=messages,
+                    temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
+                    max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 400)
+                )
+                content = response.choices[0].message.content
+            else:
+                response = mistral_client.chat(
+                    model=MISTRAL_MODEL,
+                    messages=messages,
+                    temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
+                    max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 400)
+                )
+                content = response.choices[0].message.content
             
-            content = response.choices[0].message.content
-            
-            # Парсим ответ в новом формате v2.0
+            # Парсим ответ
             content_lower = content.lower()
             
-            # Ищем вердикт
-            if "вердикт:" in content_lower:
-                verdict_line = [line for line in content.split('\n') if 'вердикт:' in line.lower()]
-                if verdict_line:
-                    verdict_text = verdict_line[0].lower()
-                    if "банить" in verdict_text and "не банить" not in verdict_text:
-                        verdict = VerdictType.BAN
-                        confidence = 0.8
-                    else:
-                        verdict = VerdictType.APPROVE
-                        confidence = 0.75
-                else:
-                    verdict = VerdictType.APPROVE
-                    confidence = 0.65
-            else:
-                verdict = VerdictType.APPROVE
-                confidence = 0.65
+            # Определяем действие
+            final_action = "none"
+            if "финальное действие:" in content_lower:
+                try:
+                    action_line = [line for line in content.split('\n') if 'финальное действие:' in line.lower()][0]
+                    action_text = action_line.lower()
+                    if "ban" in action_text:
+                        final_action = "ban"
+                    elif "mute" in action_text:
+                        final_action = "mute"
+                    elif "warn" in action_text:
+                        final_action = "warn"
+                    elif "delete" in action_text:
+                        final_action = "delete"
+                except:
+                    pass
             
-            # Ищем уверенность
+            # Определяем длительность
+            final_duration = 0
+            if final_action == "mute" and "длительность:" in content_lower:
+                try:
+                    duration_line = [line for line in content.split('\n') if 'длительность:' in line.lower()][0]
+                    duration_str = ''.join(filter(str.isdigit, duration_line))
+                    if duration_str:
+                        final_duration = int(duration_str)
+                except:
+                    pass
+            
+            # Определяем уверенность
+            final_confidence = 0.8
             if "уверенность:" in content_lower:
-                confidence_line = [line for line in content.split('\n') if 'уверенность:' in line.lower()]
-                if confidence_line:
-                    try:
-                        import re
-                        numbers = re.findall(r'\d+', confidence_line[0])
-                        if numbers:
-                            confidence = int(numbers[0]) / 100.0
-                            confidence = min(1.0, max(0.0, confidence))
-                    except:
-                        pass
+                try:
+                    conf_line = [line for line in content.split('\n') if 'уверенность:' in line.lower()][0]
+                    conf_str = ''.join(filter(str.isdigit, conf_line))
+                    if conf_str:
+                        final_confidence = int(conf_str) / 100.0
+                except:
+                    pass
             
             reasoning = f"Mistral AI арбитр ({MISTRAL_IMPORT_VERSION}): {content}"
             
-            logger.info(f"🤖 Mistral AI принял решение: {verdict.value} (уверенность: {confidence:.2f})")
-            return verdict, confidence, reasoning
+            logger.info(f"🤖 Mistral AI принял решение: {final_action} (уверенность: {final_confidence:.2f})")
             
+            return final_action, final_duration, final_confidence, reasoning
+        
         except Exception as e:
             logger.error(f"Ошибка Mistral AI арбитража: {e}")
-            # Fallback логика при ошибке Mistral AI
             return self.resolve_conflict_fallback(agent3, agent4, message_text)
     
-    def resolve_conflict_fallback(self, agent3: AgentVerdict, agent4: AgentVerdict, message_text: str) -> tuple:
-        """Резервная логика разрешения конфликтов без Mistral AI"""
+    def resolve_conflict_fallback(
+        self, 
+        agent3: AgentVerdict, 
+        agent4: AgentVerdict, 
+        message_text: str
+    ) -> tuple:
+        """Резервная логика разрешения конфликтов"""
+        
         logger.info("🔍 Разрешение конфликта (резервный алгоритм)...")
         
-        # Взвешенная оценка по уверенности
-        weight3 = agent3.confidence
-        weight4 = agent4.confidence
+        # Взвешиваем уверенность обоих агентов
+        weight3 = agent3.confidence * (1 + agent3.severity / 10)
+        weight4 = agent4.confidence * (1 + agent4.severity / 10)
         
-        # Если один агент значительно увереннее другого
-        if weight3 > 0.8 and weight4 < 0.6:
-            verdict = VerdictType.BAN if agent3.ban else VerdictType.APPROVE
-            confidence = agent3.confidence * 0.9
-            reasoning = f"Конфликт разрешен в пользу Агента №3 (уверенность {weight3:.2f}). {agent3.reason}"
-        elif weight4 > 0.8 and weight3 < 0.6:
-            verdict = VerdictType.BAN if agent4.ban else VerdictType.APPROVE
-            confidence = agent4.confidence * 0.9
-            reasoning = f"Конфликт разрешен в пользу Агента №4 (уверенность {weight4:.2f}). {agent4.reason}"
+        total_weight = weight3 + weight4
+        if total_weight == 0:
+            total_weight = 1
+        
+        agent3_percent = weight3 / total_weight
+        
+        logger.info(f"Веса: Agent3={agent3_percent:.2%}, Agent4={(1-agent3_percent):.2%}")
+        
+        # Если один агент значительно увереннее
+        if weight3 > weight4 * 1.5 and agent3.severity >= 6:
+            final_action = agent3.action
+            final_duration = agent3.action_duration
+            final_confidence = agent3.confidence * 0.95
+            reasoning = f"Конфликт разрешен в пользу Агента №3 (вес {agent3_percent:.2%}). {agent3.reason}"
+        
+        elif weight4 > weight3 * 1.5 and agent4.severity >= 6:
+            final_action = agent4.action
+            final_duration = agent4.action_duration
+            final_confidence = agent4.confidence * 0.95
+            reasoning = f"Конфликт разрешен в пользу Агента №4 (вес {(1-agent3_percent):.2%}). {agent4.reason}"
+        
         else:
-            # Применяем собственный анализ (упрощенный)
-            spam_keywords = ['купить', 'скидка', 'заработок', 'кликай', 'переходи', 'вступай']
-            toxic_keywords = ['дурак', 'идиот', 'ненавижу', 'хуй', 'блять', 'сука']
-            
-            message_lower = message_text.lower()
-            spam_count = sum(1 for keyword in spam_keywords if keyword in message_lower)
-            toxic_count = sum(1 for keyword in toxic_keywords if keyword in message_lower)
-            
-            if toxic_count > 0:
-                verdict = VerdictType.BAN
-                confidence = 0.75
-                reasoning = f"Конфликт разрешен резервным анализом: обнаружены токсичные слова ({toxic_count})"
-            elif spam_count >= 2:
-                verdict = VerdictType.BAN
-                confidence = 0.70
-                reasoning = f"Конфликт разрешен резервным анализом: вероятный спам ({spam_count} спам-маркеров)"
+            # Применяем свой анализ
+            if agent3.severity > 7 or agent4.severity > 7:
+                final_action = "mute"
+                final_duration = 1440  # 24 часа
+                final_confidence = 0.75
+            elif agent3.severity > 5 or agent4.severity > 5:
+                final_action = "warn"
+                final_duration = 0
+                final_confidence = 0.70
             else:
-                verdict = VerdictType.APPROVE
-                confidence = 0.65
-                reasoning = "Конфликт разрешен резервным анализом: сообщение выглядит безопасным"
+                final_action = "none"
+                final_duration = 0
+                final_confidence = 0.65
+            
+            reasoning = f"Конфликт разрешен комбинированным анализом. Среднее: серьезность={(agent3.severity + agent4.severity)/2:.1f}/10"
         
-        logger.info(f"⚖️ Конфликт разрешен: {verdict.value} (уверенность: {confidence:.2f})")
-        return verdict, confidence, reasoning
+        logger.info(f"⚖️ Конфликт разрешен: {final_action} (уверенность: {final_confidence:.2f})")
+        
+        return final_action, final_duration, final_confidence, reasoning
     
     def make_decision(self, agent3_data: Dict[str, Any], agent4_data: Dict[str, Any]) -> Agent5Decision:
         """Принятие окончательного решения"""
+        
         # Парсим вердикты агентов
         agent3 = AgentVerdict(
-            agent_id=agent3_data.get("agent_id", 3),
-            ban=agent3_data.get("ban", False),
+            agent_id=3,
+            action=agent3_data.get("action", "none"),
+            action_duration=agent3_data.get("action_duration", 0),
             reason=agent3_data.get("reason", ""),
             confidence=agent3_data.get("confidence", 0.5),
+            violation_type=agent3_data.get("violation_type", "unknown"),
+            severity=agent3_data.get("severity", 5),
             timestamp=datetime.now()
         )
         
         agent4 = AgentVerdict(
-            agent_id=agent4_data.get("agent_id", 4),
-            ban=agent4_data.get("ban", False),
+            agent_id=4,
+            action=agent4_data.get("action", "none"),
+            action_duration=agent4_data.get("action_duration", 0),
             reason=agent4_data.get("reason", ""),
             confidence=agent4_data.get("confidence", 0.5),
+            violation_type=agent4_data.get("violation_type", "unknown"),
+            severity=agent4_data.get("severity", 5),
             timestamp=datetime.now()
         )
         
-        logger.info(f"🤔 Анализ вердиктов: Agent3={'БАН' if agent3.ban else 'НЕ БАНИТЬ'} ({agent3.confidence:.2f}), "
-                   f"Agent4={'БАН' if agent4.ban else 'НЕ БАНИТЬ'} ({agent4.confidence:.2f})")
+        logger.info(
+            f"🤔 Анализ вердиктов: Agent3={agent3.action} "
+            f"({agent3.confidence:.2f}, серьезность {agent3.severity}/10), "
+            f"Agent4={agent4.action} ({agent4.confidence:.2f}, серьезность {agent4.severity}/10)"
+        )
         
+        # Проверяем конфликт
         has_conflict = self.has_conflict(agent3, agent4)
+        conflict_resolved_by = ""
         
         if not has_conflict:
-            # Вердикты согласованы
-            final_verdict = VerdictType.BAN if agent3.ban else VerdictType.APPROVE
-            confidence = (agent3.confidence + agent4.confidence) / 2
-            reasoning = (
-                f"Агенты №3 и №4 согласны. Средняя уверенность: {confidence:.2f}. "
-                f"Agent3: {agent3.reason}. Agent4: {agent4.reason}."
-            )
+            # Вердикты согласованы - берем средний результат
+            if agent3.action == agent4.action:
+                final_action = agent3.action
+                final_duration = (agent3.action_duration + agent4.action_duration) // 2
+                final_confidence = (agent3.confidence + agent4.confidence) / 2
+                reasoning = (
+                    f"Агенты №3 и №4 согласны. Действие: {final_action}. "
+                    f"Средняя уверенность: {final_confidence:.2f}. "
+                    f"Средняя серьезность: {(agent3.severity + agent4.severity) / 2:.1f}/10"
+                )
+            else:
+                # Если действия разные, но уверенность достаточная - выбираем более уверенный
+                if agent3.confidence > agent4.confidence:
+                    final_action = agent3.action
+                    final_duration = agent3.action_duration
+                    final_confidence = agent3.confidence
+                    reasoning = f"Выбрано действие Агента №3 (выше уверенность: {agent3.confidence:.2f})"
+                else:
+                    final_action = agent4.action
+                    final_duration = agent4.action_duration
+                    final_confidence = agent4.confidence
+                    reasoning = f"Выбрано действие Агента №4 (выше уверенность: {agent4.confidence:.2f})"
+            
+            conflict_resolved_by = "consensus"
             logger.info("✅ Конфликта нет, принимаем согласованное решение")
+        
         else:
-            # Есть конфликт - используем Mistral AI арбитр
+            # Есть конфликт - используем Mistral AI
             logger.warning("⚠️ Обнаружен конфликт между агентами!")
             rules = agent3_data.get("rules", []) or agent4_data.get("rules", [])
-            final_verdict, confidence, reasoning = self.resolve_conflict_with_mistral(
+            
+            final_action, final_duration, final_confidence, reasoning = self.resolve_conflict_with_mistral(
                 agent3, agent4, agent3_data.get("message", ""), rules
             )
+            
+            conflict_resolved_by = "mistral_ai"
         
-        decision_id = f"decision_{agent3_data.get('message_id', 0)}_{int(datetime.now().timestamp())}"
+        # Генерируем уникальный ID решения
+        decision_id = f"decision_{agent3_data.get('message_id', 0)}_{int(datetime.now().timestamp()*1000)}"
         
+        # Создаем решение
         decision = Agent5Decision(
             decision_id=decision_id,
             message_id=agent3_data.get("message_id", 0),
@@ -326,12 +434,16 @@ class ModerationArbiter:
             user_id=agent3_data.get("user_id", 0),
             username=agent3_data.get("username", ""),
             message_text=agent3_data.get("message", ""),
-            final_verdict=final_verdict,
-            confidence=confidence,
+            final_action=final_action,
+            final_action_duration=final_duration,
+            final_confidence=final_confidence,
             reasoning=reasoning,
-            agent3_verdict=agent3.to_verdict_type(),
-            agent4_verdict=agent4.to_verdict_type(),
+            agent3_action=agent3.action,
+            agent4_action=agent4.action,
+            agent3_severity=agent3.severity,
+            agent4_severity=agent4.severity,
             was_conflict=has_conflict,
+            conflict_resolved_by=conflict_resolved_by,
             timestamp=datetime.now()
         )
         
@@ -339,90 +451,57 @@ class ModerationArbiter:
         return decision
 
 # ============================================================================
-# УВЕДОМЛЕНИЕ МОДЕРАТОРОВ
+# ОСНОВНАЯ ФУНКЦИЯ АГЕНТА 5
 # ============================================================================
-def send_notification_to_moderators(decision: Agent5Decision) -> bool:
-    """Отправка уведомлений модераторам о принятом решении"""
-    if decision.final_verdict != VerdictType.BAN:
-        return True  # Не уведомляем о разрешенных сообщениях
-    
-    try:
-        # Формируем уведомление
-        notification = (
-            f"🚨 <b>Обнаружено нарушение в чате!</b>\n\n"
-            f"💬 <b>Чат ID:</b> {decision.chat_id}\n"
-            f"👤 <b>Пользователь:</b> {decision.username}\n"
-            f"📄 <b>Сообщение:</b> {decision.message_text[:200]}{'...' if len(decision.message_text) > 200 else ''}\n"
-            f"⚖️ <b>Решение агента 5:</b> {decision.final_verdict.value.upper()}\n"
-            f"🎯 <b>Уверенность:</b> {decision.confidence:.1%}\n"
-            f"📝 <b>Причина:</b> {decision.reasoning[:300]}{'...' if len(decision.reasoning) > 300 else ''}\n"
-            f"🤖 <b>Agent3:</b> {decision.agent3_verdict.value}, <b>Agent4:</b> {decision.agent4_verdict.value}\n"
-            f"⚡ <b>Конфликт:</b> {'Да' if decision.was_conflict else 'Нет'}\n"
-            f"🧠 <b>ИИ провайдер:</b> Mistral AI ({MISTRAL_MODEL})\n"
-            f"🔧 <b>Импорт:</b> {MISTRAL_IMPORT_VERSION}\n"
-            f"⚙️ <b>Конфигурация:</b> Environment variables (.env)\n"
-            f"🕐 <b>Время:</b> {decision.timestamp.strftime('%H:%M:%S')}"
-        )
-        
-        # В реальной реализации здесь должна быть отправка через БД модераторам
-        # Для примера логируем уведомление
-        logger.info(f"📤 Уведомление готово к отправке модераторам чата {decision.chat_id}")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка формирования уведомления: {e}")
-        return False
 
-# ============================================================================
-# ОСНОВНАЯ ЛОГИКА АГЕНТА 5
-# ============================================================================
 def moderation_agent_5(agent3_data: Dict[str, Any], agent4_data: Dict[str, Any]):
-    """
-    АГЕНТ 5 — Арбитр принимает окончательное решение с Mistral AI (исправленная версия v5.5)
-    """
+    """АГЕНТ 5 — Арбитр принимает окончательное решение"""
+    
     arbiter = ModerationArbiter()
-    
-    # Принимаем решение
     decision = arbiter.make_decision(agent3_data, agent4_data)
-    
-    # Уведомляем модераторов
-    notification_sent = send_notification_to_moderators(decision)
     
     output = {
         "agent_id": 5,
         "decision_id": decision.decision_id,
-        "final_verdict": decision.final_verdict.value,
-        "ban": decision.final_verdict == VerdictType.BAN,
-        "confidence": decision.confidence,
+        "final_action": decision.final_action,
+        "final_action_duration": decision.final_action_duration,
+        "final_confidence": decision.final_confidence,
         "reasoning": decision.reasoning,
         "message": decision.message_text,
         "user_id": decision.user_id,
         "username": decision.username,
         "chat_id": decision.chat_id,
         "message_id": decision.message_id,
-        "agent3_verdict": decision.agent3_verdict.value,
-        "agent4_verdict": decision.agent4_verdict.value,
+        "agent3_action": decision.agent3_action,
+        "agent4_action": decision.agent4_action,
+        "agent3_severity": decision.agent3_severity,
+        "agent4_severity": decision.agent4_severity,
         "was_conflict": decision.was_conflict,
-        "notification_sent": notification_sent,
+        "conflict_resolved_by": decision.conflict_resolved_by,
         "ai_provider": f"Mistral AI ({MISTRAL_MODEL})",
         "import_version": MISTRAL_IMPORT_VERSION,
-        "prompt_version": "v2.0 - обновленный формат",
-        "configuration": "Environment variables (.env)",
         "status": "success",
         "timestamp": decision.timestamp.isoformat()
     }
     
-    if decision.final_verdict == VerdictType.BAN:
-        logger.warning(f"🚨 ФИНАЛЬНОЕ РЕШЕНИЕ (Mistral AI): БАН для @{decision.username} в чате {decision.chat_id}")
+    if decision.final_action != "none":
+        logger.warning(
+            f"🚨 ФИНАЛЬНОЕ РЕШЕНИЕ: {decision.final_action.upper()} "
+            f"для @{decision.username} в чате {decision.chat_id} "
+            f"(уверенность: {decision.final_confidence:.2%})"
+        )
     else:
-        logger.info(f"✅ ФИНАЛЬНОЕ РЕШЕНИЕ (Mistral AI): НЕ БАНИТЬ @{decision.username} в чате {decision.chat_id}")
+        logger.info(
+            f"✅ ФИНАЛЬНОЕ РЕШЕНИЕ: НЕ ДЕЙСТВОВАТЬ "
+            f"для @{decision.username} в чате {decision.chat_id}"
+        )
     
     return output
 
 # ============================================================================
-# РАБОТА С REDIS
+# REDIS WORKER
 # ============================================================================
+
 class Agent5Worker:
     def __init__(self):
         try:
@@ -434,7 +513,7 @@ class Agent5Worker:
             logger.error(f"❌ Не удалось подключиться к Redis: {e}")
             raise
         
-        self.pending_decisions = {}  # Временное хранение решений агентов
+        self.pending_decisions = {}  # Хранилище решений агентов
     
     def process_agent_result(self, message_data):
         """Обрабатывает результат от агента 3 или 4"""
@@ -444,7 +523,7 @@ class Agent5Worker:
             message_id = agent_data.get("message_id")
             
             if not message_id:
-                logger.error("Отсутствует message_id в данных агента")
+                logger.error("Отсутствует message_id")
                 return None
             
             # Сохраняем результат агента
@@ -457,8 +536,8 @@ class Agent5Worker:
             
             # Проверяем, есть ли результаты от обоих агентов
             decision_data = self.pending_decisions[message_id]
+            
             if "agent_3" in decision_data and "agent_4" in decision_data:
-                # Есть результаты от обоих агентов - принимаем решение
                 logger.info(f"🎯 Есть результаты от обоих агентов для сообщения {message_id}")
                 
                 agent3_data = decision_data["agent_3"]
@@ -466,31 +545,35 @@ class Agent5Worker:
                 
                 final_decision = moderation_agent_5(agent3_data, agent4_data)
                 
-                # Удаляем из временного хранения
+                # Удаляем из временного хранилища
                 del self.pending_decisions[message_id]
                 
                 return final_decision
-                
             else:
                 logger.info(f"⏳ Ждем результат от второго агента для сообщения {message_id}")
                 return None
-                
+        
         except json.JSONDecodeError as e:
             logger.error(f"Невалидный JSON: {e}")
             return None
         except Exception as e:
-            logger.error(f"Ошибка обработки результата агента: {e}")
+            logger.error(f"Ошибка обработки: {e}")
             return None
+    
+    def save_decision(self, result):
+        """Сохраняет решение (можно отправить в БД или очередь)"""
+        if result:
+            logger.info(f"💾 Решение {result['decision_id']} готово к сохранению")
+            # Здесь можно добавить сохранение в БД или отправку в очередь
     
     def run(self):
         """Главный цикл обработки результатов агентов"""
-        logger.info(f"✅ Агент 5 запущен (Mistral AI арбитр исправленный v5.5)")
-        logger.info(f"   Модель: {MISTRAL_MODEL}")
-        logger.info(f"   Импорт: {MISTRAL_IMPORT_VERSION}")
-        logger.info(f"   Статус Mistral AI: {'✅ Доступен' if mistral_client else '❌ Недоступен'}")
-        logger.info(f"   Слушаю очередь: {QUEUE_AGENT_5_INPUT}")
-        logger.info(f"   Стандартные правила v2.0: {DEFAULT_RULES}")
-        logger.info("   Нажмите Ctrl+C для остановки\n")
+        logger.info(f"✅ Агент 5 запущен (Арбитр v5.5)")
+        logger.info(f" Модель: {MISTRAL_MODEL}")
+        logger.info(f" Импорт: {MISTRAL_IMPORT_VERSION}")
+        logger.info(f" Статус: {'✅ Доступен' if mistral_client else '❌ Недоступен'}")
+        logger.info(f" Слушаю очередь: {QUEUE_AGENT_5_INPUT}")
+        logger.info(" Нажмите Ctrl+C для остановки\n")
         
         try:
             while True:
@@ -504,113 +587,68 @@ class Agent5Worker:
                     output = self.process_agent_result(message_data)
                     
                     if output:
+                        self.save_decision(output)
                         logger.info(f"✅ Финальное решение принято\n")
-                    
+                
                 except Exception as e:
                     logger.error(f"Ошибка в цикле: {e}")
                     time.sleep(1)
-                    
+        
         except KeyboardInterrupt:
             logger.info("\n❌ Агент 5 остановлен (Ctrl+C)")
         finally:
             logger.info("Агент 5 завершил работу")
 
 # ============================================================================
-# FASTAPI ПРИЛОЖЕНИЕ
-# ============================================================================
-app = FastAPI(
-    title="🤖 Агент №5 - Арбитр (Mistral AI исправленный)",
-    description="Арбитражное решение конфликтов между агентами",
-    version="5.5"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "online",
-        "agent_id": 5,
-        "name": "Агент №5 (Арбитр)",
-        "version": "5.5 (Mistral AI исправленный)",
-        "ai_provider": f"Mistral AI ({MISTRAL_MODEL})" if mistral_client else "Mistral AI (недоступен)",
-        "import_version": MISTRAL_IMPORT_VERSION,
-        "import_success": MISTRAL_IMPORT_SUCCESS,
-        "client_status": "✅ Создан" if mistral_client else "❌ Не создан",
-        "prompt_version": "v2.0 - обновленный формат",
-        "configuration": "Environment variables (.env)",
-        "default_rules": DEFAULT_RULES,
-        "timestamp": datetime.now().isoformat(),
-        "redis_queue": QUEUE_AGENT_5_INPUT,
-        "uptime_seconds": int(time.time())
-    }
-
-# ============================================================================
-# ЗАПУСК FASTAPI В ОТДЕЛЬНОМ ПОТОКЕ
-# ============================================================================
-def run_fastapi():
-    """Запуск FastAPI сервера"""
-    uvicorn.run(app, host="localhost", port=AGENT_PORTS[5], log_level="info")
-
-# ============================================================================
 # ТОЧКА ВХОДА
 # ============================================================================
+
 if __name__ == "__main__":
     import sys
     
-    if len(sys.argv) > 1:
-        mode = sys.argv[1]
-        if mode == "test":
-            # Тестирование арбитража
-            agent3_data = {
-                "agent_id": 3,
-                "ban": True,
-                "reason": "Вердикт: банить\nПричина: Обнаружено нецензурное слово\nУверенность: 85%",
-                "confidence": 0.85,
-                "message": "Тестовое сообщение с матом",
-                "user_id": 123,
-                "username": "test_user",
-                "chat_id": -100,
-                "message_id": 1,
-                "rules": DEFAULT_RULES
-            }
-            
-            agent4_data = {
-                "agent_id": 4,
-                "ban": False,
-                "reason": "Вердикт: не банить\nПричина: Нарушений не обнаружено\nУверенность: 70%",
-                "confidence": 0.70,
-                "message": "Тестовое сообщение с матом",
-                "user_id": 123,
-                "username": "test_user", 
-                "chat_id": -100,
-                "message_id": 1,
-                "rules": DEFAULT_RULES
-            }
-            
-            result = moderation_agent_5(agent3_data, agent4_data)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        elif mode == "api":
-            # Запуск только FastAPI
-            run_fastapi()
-    else:
-        # Запуск FastAPI в отдельном потоке
-        fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
-        fastapi_thread.start()
-        logger.info(f"✅ FastAPI сервер запущен на порту {AGENT_PORTS[5]}")
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        # Тестирование арбитража
+        agent3_data = {
+            "agent_id": 3,
+            "action": "mute",
+            "action_duration": 60,
+            "reason": "Обнаружен мат",
+            "confidence": 0.85,
+            "violation_type": "profanity",
+            "severity": 7,
+            "message": "Ты дурак! Хуй тебе!",
+            "user_id": 123,
+            "username": "test_user",
+            "chat_id": -100,
+            "message_id": 1,
+            "rules": DEFAULT_RULES
+        }
         
-        # Запуск основного Redis worker
+        agent4_data = {
+            "agent_id": 4,
+            "action": "warn",
+            "action_duration": 0,
+            "reason": "Обнаружена нецензурная лексика",
+            "confidence": 0.70,
+            "violation_type": "profanity",
+            "severity": 6,
+            "message": "Ты дурак! Хуй тебе!",
+            "user_id": 123,
+            "username": "test_user",
+            "chat_id": -100,
+            "message_id": 1,
+            "rules": DEFAULT_RULES
+        }
+        
+        print("\n=== ТЕСТИРОВАНИЕ АГЕНТА 5 ===\n")
+        result = moderation_agent_5(agent3_data, agent4_data)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    
+    else:
         try:
             worker = Agent5Worker()
             worker.run()
         except KeyboardInterrupt:
-            logger.info("Выход из программы")
+            logger.info("Выход")
         except Exception as e:
             logger.error(f"Критическая ошибка: {e}")
