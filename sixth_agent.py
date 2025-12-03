@@ -2,261 +2,116 @@
 # -*- coding: utf-8 -*-
 
 """
-АГЕНТ №6 — Анализатор медиа (фото, видео, гифки) с Mistral Vision
+АГЕНТ №6 — Анализатор медиа контента с Mistral Vision
 """
 
 import json
+import base64
+import requests
 import redis
 import time
-import os
+from pathlib import Path
 from typing import Dict, Any
 from datetime import datetime
-from pathlib import Path
 
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, BigInteger, Text
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import threading
+import logging
 
-# Mistral AI импорты
-try:
-    from mistralai.client import MistralClient
-    from mistralai.models.chat_completion import ChatMessage
-
-    MISTRAL_IMPORT_SUCCESS = True
-    MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
-except ImportError:
-    try:
-        from mistralai import Mistral as MistralClient
-        from mistralai import UserMessage, SystemMessage
-
-
-        def ChatMessage(role, content):
-            return {"role": role, "content": content}
-
-
-        MISTRAL_IMPORT_SUCCESS = True
-        MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
-    except ImportError:
-        print("❌ Не удалось импортировать Mistral AI")
-        MISTRAL_IMPORT_SUCCESS = False
-        MISTRAL_IMPORT_VERSION = "none"
-
-
-        class MistralClient:
-            def __init__(self, api_key): pass
-
-            def chat(self, **kwargs):
-                raise ImportError("Mistral AI не установлен")
-
-
-        def ChatMessage(role, content):
-            return {"role": role, "content": content}
-
-# Импорты requests для скачивания файлов
-import requests
-from requests.exceptions import RequestException
-
+# Импорт конфигурации и БД
 from config import (
     MISTRAL_API_KEY,
     MISTRAL_MODEL,
     MISTRAL_GENERATION_PARAMS,
-    POSTGRES_URL,
     get_redis_config,
+    MEDIA_DIR,
+    POSTGRES_URL,
     AGENT_PORTS,
-    setup_logging
+    setup_logging,
+    TELEGRAM_BOT_TOKEN,
 )
 
-# ============================================================================
-# ЛОГИРОВАНИЕ
-# ============================================================================
+from sqlalchemy.orm import sessionmaker
+from your_models import Chat, MediaFile, get_db_engine  # Импорт моделей и движка БД (адаптируй под свой проект)
 
 logger = setup_logging("АГЕНТ 6")
 
-if MISTRAL_IMPORT_SUCCESS:
-    logger.info(f"✅ Mistral AI импортирован успешно ({MISTRAL_IMPORT_VERSION})")
-else:
-    logger.error("❌ Mistral AI не импортирован")
-
-# ============================================================================
-# ИНИЦИАЛИЗАЦИЯ MISTRAL AI
-# ============================================================================
-
-if MISTRAL_IMPORT_SUCCESS and MISTRAL_API_KEY:
-    try:
-        mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
-        logger.info("✅ Mistral AI клиент создан")
-    except Exception as e:
-        logger.error(f"❌ Ошибка создания Mistral AI клиента: {e}")
-        mistral_client = None
-else:
-    mistral_client = None
-    logger.warning("⚠️ Mistral AI клиент не создан")
-
-# ============================================================================
-# ДИРЕКТОРИЯ ДЛЯ МЕДИА ФАЙЛОВ
-# ============================================================================
-
-MEDIA_DIR = Path("./media_files")
-MEDIA_DIR.mkdir(exist_ok=True)
-logger.info(f"📁 Директория для медиа: {MEDIA_DIR.absolute()}")
-
-# ============================================================================
-# МОДЕЛИ БД
-# ============================================================================
-
-Base = declarative_base()
-
-
-class Chat(Base):
-    __tablename__ = 'chats'
-    id = Column(Integer, primary_key=True)
-    tg_chat_id = Column(String, unique=True, nullable=False)
-    title = Column(String, nullable=True)
-
-
-class MediaFile(Base):
-    __tablename__ = 'media_files'
-
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=False)
-    user_id = Column(BigInteger, nullable=False)
-    username = Column(String)
-    media_type = Column(String)  # photo, video, gif, document
-    file_id = Column(String, unique=True, nullable=False)
-    file_unique_id = Column(String)
-    file_name = Column(String, nullable=True)
-    file_size = Column(Integer, nullable=True)
-    mime_type = Column(String, nullable=True)
-    local_path = Column(String, nullable=True)
-    message_id = Column(BigInteger, nullable=False)
-    message_link = Column(String)
-    caption = Column(Text, nullable=True)
-
-    # Анализ медиа
-    analysis_result = Column(Text, nullable=True)
-    is_suspicious = Column(Boolean, default=False)
-    suspension_reason = Column(Text, nullable=True)
-
-    # Метаданные
-    agent_id = Column(Integer)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    analyzed_at = Column(DateTime, nullable=True)
-
-    chat = relationship('Chat', backref='media_files')
-
-
-# ============================================================================
-# ИНИЦИАЛИЗАЦИЯ БД И REDIS
-# ============================================================================
-
-engine = create_engine(POSTGRES_URL)
-Base.metadata.create_all(engine)
+engine = get_db_engine()
 SessionLocal = sessionmaker(bind=engine)
 
+# Инициализация Redis и Mistral
+redis_client = redis.Redis(**get_redis_config())
 
-def get_db_session():
-    return SessionLocal()
+try:
+    from mistralai import Mistral, ChatMessage
+    from mistralai import UserMessage, SystemMessage
+    mistral_client = Mistral(api_key=MISTRAL_API_KEY)
+    logger.info(f"✅ Mistral AI Vision клиент создан")
+except Exception as e:
+    logger.error(f"❌ Не удалось инициализировать Mistral Vision: {e}")
+    mistral_client = None
 
-
-# ============================================================================
-# ФУНКЦИИ РАБОТЫ С МЕДИА
-# ============================================================================
-
-def get_media_file_path(file_unique_id: str, media_type: str) -> Path:
-    """Получить путь для сохранения медиа файла"""
-    extension = {
-        "photo": ".jpg",
-        "video": ".mp4",
-        "gif": ".gif",
-        "document": ".bin"
-    }.get(media_type, ".bin")
-
-    return MEDIA_DIR / f"{file_unique_id}{extension}"
-
+def download_telegram_file(file_id: str, local_path: Path):
+    """Скачивает файл из Telegram по file_id и сохраняет в local_path"""
+    try:
+        # Получаем путь файла
+        resp = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
+        )
+        resp.raise_for_status()
+        file_path = resp.json()['result']['file_path']
+        # Скачиваем файл напрямую
+        file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+        file_resp = requests.get(file_url)
+        file_resp.raise_for_status()
+        with open(local_path, 'wb') as f:
+            f.write(file_resp.content)
+        logger.info(f"✅ Файл Telegram {file_id} сохранён в {local_path}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка скачивания файла {file_id}: {e}")
+        return False
 
 def analyze_media_with_mistral(local_path: str, media_type: str, caption: str = "") -> dict:
-    """Анализ медиа файла через Mistral Vision"""
-
-    if not MISTRAL_IMPORT_SUCCESS or not mistral_client:
-        logger.warning("⚠️ Mistral AI недоступен, используем заглушку")
-        return {
-            "is_suspicious": False,
-            "confidence": 0.0,
-            "reason": "Mistral AI недоступен",
-            "status": "fallback"
-        }
+    """Анализирует медиа файл через Mistral Vision с передачей base64 изображения"""
+    if mistral_client is None:
+        logger.warning("⚠️ Mistral Vision не доступен")
+        return {"is_suspicious": False, "reason": "Mistral Vision недоступен", "status": "error"}
 
     try:
-        # Читаем файл в base64
-        import base64
         with open(local_path, "rb") as f:
-            image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+            image_data = base64.b64encode(f.read()).decode()
 
-        # Определяем media type для Mistral
-        if media_type == "photo":
+        # Определяем mime type для передачи (пример)
+        if media_type in ['photo', 'image']:
             mistral_media_type = "image/jpeg"
-        elif media_type == "gif":
-            mistral_media_type = "image/gif"
-        elif media_type == "video":
+        elif media_type == 'video':
             mistral_media_type = "video/mp4"
         else:
-            mistral_media_type = "image/jpeg"
+            mistral_media_type = "application/octet-stream"
 
-        system_message = f"""Ты — анализатор медиа контента для системы модерации Telegram.
-
-ТВОЯ ЗАДАЧА:
-Проанализируй предоставленное изображение/видео и определи:
-
-1. Наличие запрещённого контента:
-   - Насилие, жестокость
-   - NSFW контент
-   - Ненависть, дискриминация
-   - Экстремизм
-   - Другой вредоносный контент
-
-2. Оценка подозрительности (0-100):
-   - 0-20: Норма
-   - 21-50: Может быть проблемным
-   - 51-100: Явно подозрительно
-
-3. Рекомендация:
-   - ALLOW: Контент в порядке
-   - REVIEW: Нужна проверка модератором
-   - BLOCK: Немедленно заблокировать
-
-ДОПОЛНИТЕЛЬНАЯ ИНФОРМАЦИЯ:
-Caption: "{caption}"
-
-ФОРМАТ ОТВЕТА:
-
-ПОДОЗРИТЕЛЬНОСТЬ: [0-100]
-РЕКОМЕНДАЦИЯ: [ALLOW/REVIEW/BLOCK]
-ПРИЧИНА: [краткое описание на русском]
-УВЕРЕННОСТЬ: [0-100]%"""
-
-        # Создаём сообщение для Mistral
-        user_message = f"Проанализируй это {media_type}"
+        system_message = f"Ты — модератор медиа контента в Telegram. Проанализируй данное {media_type} на нарушение правил."
 
         messages = [
-            ChatMessage(role="system", content=system_message),
-            ChatMessage(role="user", content=user_message)
+            SystemMessage(content=system_message),
+            UserMessage(content=[
+                {"type": "text", "text": f"Описание: {caption}"},
+                {"type": "image_url", "image_url": {"url": f"data:{mistral_media_type};base64,{image_data}"}}
+            ]),
         ]
 
-        # Вызываем Mistral с изображением
-        response = mistral_client.chat(
+        response = mistral_client.chat.complete(
             model=MISTRAL_MODEL,
             messages=messages,
             temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
-            max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 300)
+            max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 300),
+            top_p=MISTRAL_GENERATION_PARAMS.get("top_p", 0.9),
         )
-
         content = response.choices[0].message.content
         content_lower = content.lower()
 
-        # Парсим результаты
         suspicion_score = 0
         if "подозрительность:" in content_lower:
             try:
@@ -272,7 +127,6 @@ Caption: "{caption}"
             recommendation = "REVIEW"
 
         is_suspicious = recommendation in ["BLOCK", "REVIEW"]
-
         confidence = 0.75
         if "уверенность:" in content_lower:
             try:
@@ -293,22 +147,10 @@ Caption: "{caption}"
 
     except Exception as e:
         logger.error(f"❌ Ошибка анализа Mistral Vision: {e}")
-        return {
-            "is_suspicious": False,
-            "reason": f"Ошибка анализа: {e}",
-            "status": "error"
-        }
+        return {"is_suspicious": False, "reason": f"Ошибка анализа: {e}", "status": "error"}
 
-
-# ============================================================================
-# ОСНОВНАЯ ЛОГИКА АГЕНТА 6
-# ============================================================================
-
-def media_analysis_agent_6(input_data, db_session):
-    """
-    АГЕНТ 6 — Анализатор медиа контента
-    """
-
+def media_analysis_agent_6(input_data: Dict[str, Any], db_session):
+    """Анализатор медиа контента"""
     media_type = input_data.get("media_type")
     file_id = input_data.get("file_id")
     user_id = input_data.get("user_id")
@@ -321,23 +163,26 @@ def media_analysis_agent_6(input_data, db_session):
     logger.info(f"🎬 Анализирую {media_type} от @{username} в чате {chat_id}")
 
     try:
-        # Создаём/получаем чат
         chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
         if not chat:
             chat = Chat(tg_chat_id=str(chat_id), title=f"Chat {chat_id}")
             db_session.add(chat)
             db_session.commit()
+        
+        media_dir = Path(MEDIA_DIR)
+        media_dir.mkdir(parents=True, exist_ok=True)
+        file_name = f"{file_id}_{media_type}"
+        file_ext = ".jpg" if media_type == "photo" else ".mp4"  # пример расширения
+        file_path = media_dir / (file_name + file_ext)
 
-        # Получаем путь для сохранения
-        file_path = get_media_file_path(
-            input_data.get("file_unique_id", file_id),
-            media_type
-        )
+        # Скачиваем файл
+        if not file_path.exists():
+            success = download_telegram_file(file_id, file_path)
+            if not success:
+                raise RuntimeError(f"Не удалось скачать файл {file_id}")
 
-        # Анализируем медиа
         analysis = analyze_media_with_mistral(str(file_path), media_type, caption)
 
-        # Сохраняем в БД
         media_obj = MediaFile(
             chat_id=chat.id,
             user_id=user_id,
@@ -358,7 +203,6 @@ def media_analysis_agent_6(input_data, db_session):
             agent_id=6,
             analyzed_at=datetime.utcnow()
         )
-
         db_session.add(media_obj)
         db_session.commit()
 
@@ -380,7 +224,7 @@ def media_analysis_agent_6(input_data, db_session):
             "recommendation": analysis.get("recommendation", "ALLOW"),
             "analysis": analysis,
             "status": "success",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
 
         if analysis.get("is_suspicious"):
@@ -390,17 +234,7 @@ def media_analysis_agent_6(input_data, db_session):
 
     except Exception as e:
         logger.error(f"❌ Ошибка обработки {media_type}: {e}")
-        return {
-            "agent_id": 6,
-            "action": "error",
-            "reason": str(e),
-            "status": "error"
-        }
-
-
-# ============================================================================
-# REDIS WORKER
-# ============================================================================
+        return {"agent_id": 6, "action": "error", "reason": str(e), "status": "error"}
 
 class Agent6Worker:
     def __init__(self):
@@ -427,11 +261,7 @@ class Agent6Worker:
 
     def run(self):
         logger.info("✅ Агент 6 запущен (Медиа анализатор с Mistral Vision)")
-        logger.info(f" Слушаю очередь: queue:agent6:input")
-        logger.info(f" Модель: {MISTRAL_MODEL}")
-        logger.info(f" Статус Mistral: {'✅ Доступен' if mistral_client else '❌ Недоступен'}")
-        logger.info(" Нажмите Ctrl+C для остановки\n")
-
+        logger.info(" Слушаю очередь: queue:agent6:input")
         db_session = None
         try:
             while True:
@@ -439,98 +269,58 @@ class Agent6Worker:
                     result = self.redis_client.blpop("queue:agent6:input", timeout=1)
                     if result is None:
                         continue
-
                     queue_name, message_data = result
                     logger.info("📨 Получено медиа")
-
-                    db_session = get_db_session()
+                    db_session = SessionLocal()
                     output = self.process_message(message_data, db_session)
-
                     db_session.close()
                     logger.info("✅ Обработка завершена\n")
-
                 except Exception as e:
                     logger.error(f"❌ Ошибка в цикле: {e}")
                     if db_session:
                         db_session.close()
                     time.sleep(1)
-
         except KeyboardInterrupt:
             logger.info("\n❌ Агент 6 остановлен (Ctrl+C)")
         finally:
             if db_session:
                 db_session.close()
 
-
-# ============================================================================
-# FASTAPI ПРИЛОЖЕНИЕ
-# ============================================================================
-
+# Запуск FastAPI сервера идёт по необходимости (пример)
 app = FastAPI(
     title="🎬 Агент №6 - Анализатор медиа (Mistral Vision)",
     description="Анализ фото, видео, гифок и документов",
     version="1.0"
 )
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/health")
 async def health_check():
-    db_session = get_db_session()
+    db_session = SessionLocal()
     try:
         total_media = db_session.query(MediaFile).count()
         suspicious_media = db_session.query(MediaFile).filter_by(is_suspicious=True).count()
     finally:
         db_session.close()
-
     return {
         "status": "online",
         "agent_id": 6,
         "name": "Агент №6 (Медиа анализатор)",
         "version": "1.0 (Mistral Vision)",
         "ai_provider": f"Mistral AI Vision ({MISTRAL_MODEL})" if mistral_client else "недоступен",
-        "import_version": MISTRAL_IMPORT_VERSION,
-        "mistral_status": "✅ Активен" if mistral_client else "❌ Неактивен",
         "total_media_analyzed": total_media,
         "suspicious_media_found": suspicious_media,
-        "media_directory": str(MEDIA_DIR.absolute()),
-        "timestamp": datetime.now().isoformat(),
         "redis_queue": "queue:agent6:input",
-        "uptime_seconds": int(time.time())
+        "timestamp": datetime.now().isoformat(),
     }
 
-
-# ============================================================================
-# ЗАПУСК
-# ============================================================================
-
 def run_fastapi():
-    uvicorn.run(app, host="localhost", port=AGENT_PORTS[6] if 6 in AGENT_PORTS else 8006, log_level="info")
-
+    uvicorn.run(app, host="localhost", port=AGENT_PORTS.get(6, 8006), log_level="info")
 
 if __name__ == "__main__":
     import sys
-
     if len(sys.argv) > 1 and sys.argv[1] == "api":
         run_fastapi()
     else:
-        # FastAPI в отдельном потоке
-        fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
-        fastapi_thread.start()
-        logger.info(f"✅ FastAPI сервер запущен на порту {AGENT_PORTS.get(6, 8006)}")
-
-        # Запуск Redis worker
-        try:
-            worker = Agent6Worker()
-            worker.run()
-        except KeyboardInterrupt:
-            logger.info("Выход из программы")
-        except Exception as e:
-            logger.error(f"❌ Критическая ошибка: {e}")
+        worker = Agent6Worker()
+        worker.run()
