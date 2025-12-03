@@ -181,6 +181,62 @@ except Exception as e:
 
 
 # ============================================================================
+# ФУНКЦИЯ УВЕДОМЛЕНИЯ МОДЕРАТОРОВ (НОВАЯ!)
+# ============================================================================
+
+async def notify_moderators(session, message_text, message_link, user_id, username, verdict, reason=""):
+    """
+    Отправляет уведомление всем модераторам чата при обнаружении нарушений
+
+    Args:
+        session: SQLAlchemy сессия БД
+        message_text: текст нарушительского сообщения
+        message_link: ссылка на сообщение
+        user_id: Telegram ID пользователя
+        username: username пользователя (@username)
+        verdict: True если БАН, False если предупреждение
+        reason: причина нарушения
+    """
+    try:
+        # Получаем всех модераторов из БД
+        from sqlalchemy.orm import Session
+        moderators = session.query(Moderator).filter(Moderator.is_active == True).all()
+
+        if not moderators:
+            logger.warning("⚠️ Модераторы не установлены в БД!")
+            return
+
+        # Формируем сообщение
+        action = "🚨 БАН" if verdict else "⚠️ ПРЕДУПРЕЖДЕНИЕ"
+        msg_preview = message_text[:100] if len(message_text) > 100 else message_text
+        reason_text = f"\n📝 Причина: {reason[:150]}" if reason else ""
+
+        notification = (
+            f"{action}\n\n"
+            f"👤 @{username}\n"
+            f"🆔 ID: {user_id}\n"
+            f"💬 Сообщение: {msg_preview}\n"
+            f"{reason_text}\n"
+            f"🔗 Ссылка: {message_link}"
+        )
+
+        # Отправляем каждому модератору
+        for moderator in moderators:
+            try:
+                await bot.send_message(
+                    chat_id=moderator.telegram_user_id,
+                    text=notification,
+                    parse_mode="HTML"
+                )
+                logger.info(f"✅ Уведомление отправлено модератору @{moderator.username} (ID: {moderator.telegram_user_id})")
+            except Exception as e:
+                logger.error(f"❌ Не удалось отправить уведомление модератору {moderator.telegram_user_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в notify_moderators: {e}")
+
+
+# ============================================================================
 # ФУНКЦИИ ФИЛЬТРАЦИИ
 # ============================================================================
 def is_group_chat(chat_type: str) -> bool:
