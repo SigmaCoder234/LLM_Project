@@ -2,339 +2,187 @@
 # -*- coding: utf-8 -*-
 
 """
-TELEGUARD - Конфиг ГОТОВЫЙ К РАБОТЕ (с MODERATOR_IDS)
-Исправлен для поддержки уведомлений модераторам
+⚙️ КОНФИГУРАЦИЯ ТЕЛЕГРАМ БОТА И АГЕНТОВ
 """
 
-import os
 import logging
-from datetime import timezone, timedelta
-from dotenv import load_dotenv
-
-load_dotenv()
+import os
+from pathlib import Path
 
 # ============================================================================
-# ФУНКЦИИ ВСПОМОГАТЕЛЬНЫЕ
+# TELEGRAM BOT
 # ============================================================================
 
-def get_env_bool(key: str, default: bool = False) -> bool:
-    """Получить boolean значение из переменной окружения"""
-    value = os.getenv(key, str(default)).lower()
-    return value in ('true', '1', 'yes', 'on')
-
-def get_env_int(key: str, default: int = 0) -> int:
-    """Получить integer значение из переменной окружения"""
-    try:
-        return int(os.getenv(key, str(default)))
-    except ValueError:
-        return default
+TELEGRAM_BOT_TOKEN = "8320009669:AAHiVLu-Em8EOXBNHYrJ0UhVX3mMMTm8Sg"
+TELEGRAM_API_URL = "https://api.telegram.org"
 
 # ============================================================================
-# AI PROVIDER DETECTION (АВТООПРЕДЕЛЕНИЕ)
+# DATABASE - PostgreSQL
 # ============================================================================
 
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
-AI_PROVIDER = os.getenv('AI_PROVIDER', 'auto').lower()
+DB_USER = "tg_user"
+DB_PASSWORD = "mnvm71"
+DB_HOST = "176.108.248.211"
+DB_PORT = 5432
+DB_NAME = "teleguard"
 
-if AI_PROVIDER == 'auto':
-    if OPENAI_API_KEY:
-        AI_PROVIDER = 'openai'
-        logger_msg = "🤖 Найден OPENAI_API_KEY, используем OpenAI"
-    elif MISTRAL_API_KEY:
-        AI_PROVIDER = 'mistral'
-        logger_msg = "🤖 Найден MISTRAL_API_KEY, используем Mistral AI"
-    else:
-        raise ValueError("❌ API ключи не найдены!")
-else:
-    logger_msg = f"🤖 AI_PROVIDER={AI_PROVIDER}"
-
-if AI_PROVIDER == 'openai' and not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY не найден!")
-elif AI_PROVIDER == 'mistral' and not MISTRAL_API_KEY:
-    raise ValueError("MISTRAL_API_KEY не найден!")
+POSTGRES_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=disable"
 
 # ============================================================================
-# МОДЕЛИ И ПАРАМЕТРЫ
+# REDIS
 # ============================================================================
 
-if AI_PROVIDER == 'openai':
-    DEFAULT_MODEL = 'gpt-3.5-turbo'
-    API_KEY = OPENAI_API_KEY
-    CURRENT_MODEL = os.getenv('OPENAI_MODEL', DEFAULT_MODEL)
-elif AI_PROVIDER == 'mistral':
-    DEFAULT_MODEL = 'mistral-large-latest'
-    API_KEY = MISTRAL_API_KEY
-    CURRENT_MODEL = os.getenv('MISTRAL_MODEL', DEFAULT_MODEL)
-
-# ============================================================================
-# TELEGRAM BOT CONFIGURATION
-# ============================================================================
-
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_API_URL = "https://api.telegram.org/bot"
-
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не найден!")
-
-# ============================================================================
-# DATABASE CONFIGURATION
-# ============================================================================
-
-POSTGRES_URL = os.getenv('POSTGRES_URL')
-POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'localhost')
-POSTGRES_PORT = get_env_int('POSTGRES_PORT', 5432)
-POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
-POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', '')
-POSTGRES_DB = os.getenv('POSTGRES_DB', 'teleguard_db')
-
-if not POSTGRES_URL:
-    raise ValueError("POSTGRES_URL не найден!")
-
-# ============================================================================
-# REDIS CONFIGURATION
-# ============================================================================
-
-REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-REDIS_PORT = get_env_int('REDIS_PORT', 6379)
-REDIS_DB = get_env_int('REDIS_DB', 0)
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
-
-if REDIS_PASSWORD == '':
-    REDIS_PASSWORD = None
-
-# ============================================================================
-# APPLICATION CONFIGURATION
-# ============================================================================
-
-DEBUG = get_env_bool('DEBUG', False)
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-
-# ============================================================================
-# TIMEZONE CONFIGURATION
-# ============================================================================
-
-TIMEZONE_NAME = os.getenv('TIMEZONE', 'Europe/Moscow')
-MSK_TIMEZONE = timezone(timedelta(hours=3))
-
-# ============================================================================
-# MODERATOR CONFIGURATION (НОВОЕ!)
-# ============================================================================
-
-MODERATOR_IDS_STR = os.getenv('MODERATOR_IDS', '')
-MODERATOR_IDS = [int(mid.strip()) for mid in MODERATOR_IDS_STR.split(',') if mid.strip().isdigit()] if MODERATOR_IDS_STR else []
-
-# ============================================================================
-# QUEUE NAMES (Redis)
-# ============================================================================
-
-QUEUE_AGENT_1_INPUT = "queue:agent1:input"
-QUEUE_AGENT_1_OUTPUT = "queue:agent1:output"
-QUEUE_AGENT_2_INPUT = "queue:agent2:input"
-QUEUE_AGENT_3_INPUT = "queue:agent3:input"
-QUEUE_AGENT_3_OUTPUT = "queue:agent3:output"
-QUEUE_AGENT_4_INPUT = "queue:agent4:input"
-QUEUE_AGENT_4_OUTPUT = "queue:agent4:output"
-QUEUE_AGENT_5_INPUT = "queue:agent5:input"
-QUEUE_AGENT_5_OUTPUT = "queue:agent5:output"
-QUEUE_AGENT_6_INPUT = "queue:agent6:input"
-QUEUE_AGENT_6_OUTPUT = "queue:agent6:output"
-
-# ============================================================================
-# DEFAULT VALUES
-# ============================================================================
-
-DEFAULT_RULES = [
-    "Запрещена расовая дискриминация",
-    "Запрещены ссылки",
-    "Запрещена нецензурная лексика и оскорбления",
-    "Запрещены угрозы и призывы к насилию"
-]
-
-# ============================================================================
-# AGENT PORTS
-# ============================================================================
-
-AGENT_PORTS = {
-    1: 8001,
-    2: 8002,
-    3: 8003,
-    4: 8004,
-    5: 8005,
-    6: 8006
-}
-
-# ============================================================================
-# AI SPECIFIC CONFIGURATION
-# ============================================================================
-
-if AI_PROVIDER == 'openai':
-    OPENAI_MODEL = CURRENT_MODEL
-    OPENAI_GENERATION_PARAMS = {
-        "temperature": 0.1,
-        "max_tokens": 300
-    }
-    OPENAI_API_KEY = API_KEY
-elif AI_PROVIDER == 'mistral':
-    MISTRAL_MODEL = CURRENT_MODEL
-    MISTRAL_API_BASE = "https://api.mistral.ai/v1"
-    MISTRAL_SUPPORTED_MODELS = [
-        "mistral-large-latest",
-        "mistral-medium-latest",
-        "mistral-small-latest",
-        "open-mistral-7b",
-        "open-mistral-8x7b",
-        "open-mistral-8x22b"
-    ]
-    MISTRAL_GENERATION_PARAMS = {
-        "temperature": 0.1,
-        "max_tokens": 300,
-        "top_p": 0.9,
-        "safe_mode": False
-    }
-    MISTRAL_API_KEY = API_KEY
-
-# ============================================================================
-# LOGGING CONFIGURATION
-# ============================================================================
-
-def setup_logging(agent_name: str = "SYSTEM"):
-    """Настройка логирования для агента"""
-    numeric_level = getattr(logging, LOG_LEVEL, logging.INFO)
-    logging.basicConfig(
-        level=numeric_level,
-        format=f'[%(asctime)s] [{agent_name}] %(levelname)s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
-    if not DEBUG:
-        logging.getLogger('httpx').setLevel(logging.WARNING)
-        logging.getLogger('openai').setLevel(logging.WARNING)
-        logging.getLogger('mistralai').setLevel(logging.WARNING)
-        logging.getLogger('requests').setLevel(logging.WARNING)
-        logging.getLogger('urllib3').setLevel(logging.WARNING)
-    
-    return logging.getLogger(agent_name)
-
-# ============================================================================
-# VALIDATION
-# ============================================================================
-
-def validate_config():
-    """Проверка корректности конфигурации"""
-    errors = []
-    
-    if AI_PROVIDER == 'openai' and not OPENAI_API_KEY:
-        errors.append("OPENAI_API_KEY обязателен")
-    elif AI_PROVIDER == 'mistral' and not MISTRAL_API_KEY:
-        errors.append("MISTRAL_API_KEY обязателен")
-    
-    if not TELEGRAM_BOT_TOKEN:
-        errors.append("TELEGRAM_BOT_TOKEN обязателен")
-    
-    if not POSTGRES_URL:
-        errors.append("POSTGRES_URL обязателен")
-    
-    if not (1 <= REDIS_PORT <= 65535):
-        errors.append(f"REDIS_PORT неверный")
-    
-    if errors:
-        raise ValueError("Ошибки конфигурации:\n" + "\n".join(f"- {error}" for error in errors))
-    
-    return True
-
-# ============================================================================
-# REDIS CONNECTION CONFIG
-# ============================================================================
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_DB = 0
+REDIS_PASSWORD = None
 
 def get_redis_config():
-    """Получить конфигурацию для подключения к Redis"""
+    """Возвращает конфигурацию для Redis"""
     return {
         "host": REDIS_HOST,
         "port": REDIS_PORT,
         "db": REDIS_DB,
-        "password": REDIS_PASSWORD,
-        "decode_responses": True
+        "decode_responses": True,
+        "password": REDIS_PASSWORD
     }
 
 # ============================================================================
-# AI CLIENT CONFIG
+# REDIS ОЧЕРЕДИ (QUEUES)
 # ============================================================================
 
-def get_ai_config():
-    """Получить конфигурацию для ИИ клиента"""
-    if AI_PROVIDER == 'openai':
-        return {
-            "provider": "openai",
-            "api_key": OPENAI_API_KEY,
-            "model": OPENAI_MODEL,
-            "generation_params": OPENAI_GENERATION_PARAMS
-        }
-    elif AI_PROVIDER == 'mistral':
-        return {
-            "provider": "mistral",
-            "api_key": MISTRAL_API_KEY,
-            "endpoint": MISTRAL_API_BASE,
-            "model": MISTRAL_MODEL,
-            "generation_params": MISTRAL_GENERATION_PARAMS
-        }
+QUEUE_AGENT_1_INPUT = "queue:agent1:input"
+QUEUE_AGENT_1_OUTPUT = "queue:agent1:output"
+
+QUEUE_AGENT_2_INPUT = "queue:agent2:input"
+QUEUE_AGENT_2_OUTPUT = "queue:agent2:output"
+
+QUEUE_AGENT_3_INPUT = "queue:agent3:input"
+QUEUE_AGENT_3_OUTPUT = "queue:agent3:output"
+
+QUEUE_AGENT_4_INPUT = "queue:agent4:input"
+QUEUE_AGENT_4_OUTPUT = "queue:agent4:output"
+
+QUEUE_AGENT_5_INPUT = "queue:agent5:input"
+QUEUE_AGENT_5_OUTPUT = "queue:agent5:output"
+
+QUEUE_AGENT_6_INPUT = "queue:agent6:input"
+QUEUE_AGENT_6_OUTPUT = "queue:agent6:output"
 
 # ============================================================================
-# CONFIG SUMMARY
+# MISTRAL AI
 # ============================================================================
 
-def get_config_summary():
-    """Получить сводку конфигурации"""
-    return {
-        "ai_provider": AI_PROVIDER,
-        "ai_model": CURRENT_MODEL,
-        "telegram_configured": bool(TELEGRAM_BOT_TOKEN),
-        "postgres_host": POSTGRES_HOST,
-        "redis_host": REDIS_HOST,
-        "debug": DEBUG,
-        "log_level": LOG_LEVEL,
-        "moderators": len(MODERATOR_IDS),
-        "default_rules": DEFAULT_RULES
-    }
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "your_mistral_key_here")
+MISTRAL_MODEL = "mistral-large-latest"
+
+MISTRAL_GENERATION_PARAMS = {
+    "temperature": 0.1,
+    "max_tokens": 300,
+    "top_p": 0.9
+}
 
 # ============================================================================
-# ИНИЦИАЛИЗАЦИЯ
+# МОДЕРАТОРЫ
 # ============================================================================
 
-try:
-    validate_config()
-except ValueError as e:
-    print(f"❌ Ошибка конфигурации: {e}")
-    exit(1)
-
-logger = setup_logging("CONFIG")
-logger.info(f"✅ Конфигурация загружена: {AI_PROVIDER.upper()} ({CURRENT_MODEL})")
-print(logger_msg)
-
-if MODERATOR_IDS:
-    logger.info(f"✅ Модераторы загружены: {len(MODERATOR_IDS)} человек(а)")
-else:
-    logger.warning("⚠️ Модераторы не установлены!")
-
-if DEBUG:
-    logger.debug("🔧 Режим отладки включен")
-
-# ============================================================================
-# ЭКСПОРТИРУЕМЫЕ ПЕРЕМЕННЫЕ
-# ============================================================================
-
-__all__ = [
-    'AI_PROVIDER', 'API_KEY', 'CURRENT_MODEL',
-    'OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_GENERATION_PARAMS',
-    'MISTRAL_API_KEY', 'MISTRAL_MODEL', 'MISTRAL_API_BASE', 'MISTRAL_GENERATION_PARAMS',
-    'TELEGRAM_BOT_TOKEN', 'TELEGRAM_API_URL',
-    'POSTGRES_URL', 'POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_DB',
-    'REDIS_HOST', 'REDIS_PORT', 'REDIS_DB', 'REDIS_PASSWORD',
-    'DEBUG', 'LOG_LEVEL', 'MSK_TIMEZONE',
-    'DEFAULT_RULES', 'MODERATOR_IDS', 'AGENT_PORTS',
-    'QUEUE_AGENT_1_INPUT', 'QUEUE_AGENT_1_OUTPUT',
-    'QUEUE_AGENT_2_INPUT', 'QUEUE_AGENT_3_INPUT', 'QUEUE_AGENT_3_OUTPUT',
-    'QUEUE_AGENT_4_INPUT', 'QUEUE_AGENT_4_OUTPUT', 'QUEUE_AGENT_5_INPUT', 'QUEUE_AGENT_5_OUTPUT',
-    'QUEUE_AGENT_6_INPUT', 'QUEUE_AGENT_6_OUTPUT',
-    'setup_logging', 'validate_config', 'get_redis_config', 'get_ai_config', 'get_config_summary'
+# 👥 TELEGRAM ID'ы модераторов которые будут получать уведомления о нарушениях
+MODERATOR_IDS = [
+    1621052774,  # Твой ID (замени на свой)
+    # Добавь еще модераторов если нужно:
+    # 2345678901,
+    # 3456789012,
 ]
+
+# ============================================================================
+# ПРАВИЛА ЧАТА (ПО УМОЛЧАНИЮ)
+# ============================================================================
+
+DEFAULT_RULES = [
+    "1. Запрещен мат и нецензурная лексика",
+    "2. Запрещены личные оскорбления и угрозы",
+    "3. Запрещена реклама и спам",
+    "4. Запрещена дискриминация по расовому, религиозному признаку",
+    "5. Запрещены ссылки на вредоносные ресурсы",
+    "6. Запрещены сексуальные/порнографические материалы",
+    "7. Соблюдайте вежливость и уважение к другим участникам"
+]
+
+# ============================================================================
+# ПОРТЫ АГЕНТОВ
+# ============================================================================
+
+AGENT_PORTS = {
+    1: 8001,  # Агент 1 - Преобработчик
+    2: 8002,  # Агент 2 - Анализатор
+    3: 8003,  # Агент 3 - Модератор (Mistral AI)
+    4: 8004,  # Агент 4 - Модератор (Эвристический + Mistral)
+    5: 8005,  # Агент 5 - Арбитр (Mistral AI)
+    6: 8006,  # Агент 6 - Анализ медиа (Mistral Vision)
+}
+
+# ============================================================================
+# ЛОГИРОВАНИЕ
+# ============================================================================
+
+LOG_LEVEL = "INFO"
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+def setup_logging(name):
+    """Настраивает логирование для модуля"""
+    logger = logging.getLogger(name)
+    logger.setLevel(LOG_LEVEL)
+    
+    # Консоль
+    handler = logging.StreamHandler()
+    handler.setLevel(LOG_LEVEL)
+    formatter = logging.Formatter(LOG_FORMAT)
+    handler.setFormatter(formatter)
+    
+    if not logger.handlers:
+        logger.addHandler(handler)
+    
+    return logger
+
+# ============================================================================
+# ПУТИ
+# ============================================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+LOGS_DIR = BASE_DIR / "logs"
+DATA_DIR = BASE_DIR / "data"
+
+# Создаем директории если их нет
+LOGS_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(exist_ok=True)
+
+# ============================================================================
+# ДРУГИЕ НАСТРОЙКИ
+# ============================================================================
+
+# Таймаут для запросов
+REQUEST_TIMEOUT = 30
+
+# Максимум сообщений для анализа за раз
+MAX_MESSAGES_BATCH = 100
+
+# Количество попыток повтора при ошибке
+RETRY_ATTEMPTS = 3
+RETRY_DELAY = 2  # в секундах
+
+# ============================================================================
+# ПРОВЕРКА КОНФИГУРАЦИИ
+# ============================================================================
+
+if __name__ == "__main__":
+    print("=" * 70)
+    print("⚙️  КОНФИГУРАЦИЯ TELEGUARD BOT")
+    print("=" * 70)
+    print(f"✅ Telegram Token: {'***' + TELEGRAM_BOT_TOKEN[-10:]}")
+    print(f"✅ PostgreSQL: {DB_HOST}:{DB_PORT}/{DB_NAME}")
+    print(f"✅ Redis: {REDIS_HOST}:{REDIS_PORT}")
+    print(f"✅ Mistral API: {'Настроен' if MISTRAL_API_KEY != 'your_mistral_key_here' else 'НЕ НАСТРОЕН'}")
+    print(f"✅ Модераторы: {len(MODERATOR_IDS)} человек")
+    print(f"✅ Правила: {len(DEFAULT_RULES)} правил")
+    print(f"✅ Агенты: {len(AGENT_PORTS)} агентов")
+    print("=" * 70)
