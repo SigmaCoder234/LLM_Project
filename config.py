@@ -72,12 +72,13 @@ QUEUE_AGENT_6_OUTPUT = "queue:agent6:output"
 # ============================================================================
 
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "your_mistral_key_here")
+
 MISTRAL_MODEL = "mistral-large-latest"
 
 MISTRAL_GENERATION_PARAMS = {
-    "temperature": 0.1,
-    "max_tokens": 300,
-    "top_p": 0.9
+    "temperature": 0.3,   # было 0.1
+    "max_tokens": 600,    # было 300
+    "top_p": 0.95         # было 0.9
 }
 
 # ============================================================================

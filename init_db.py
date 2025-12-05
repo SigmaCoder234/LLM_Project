@@ -92,19 +92,19 @@ def init_database():
                 FOREIGN KEY (chat_id) REFERENCES chats(id)
             );
             CREATE TABLE IF NOT EXISTS violations (
-    			id SERIAL PRIMARY KEY,
-  				chat_id INTEGER NOT NULL,
-    			message_id BIGINT NOT NULL,
-    			sender_id BIGINT NOT NULL,
-    			violation_type VARCHAR(100),
-    			description TEXT,
-    			severity VARCHAR(50),
-    			action_taken VARCHAR(50),  # ← уже есть
-    			action_duration INTEGER DEFAULT 0,  # ← ДОБАВИТЬ
-        		action_reason VARCHAR(255),  # ← ДОБАВИТЬ
-   			    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		        FOREIGN KEY (chat_id) REFERENCES chats(id)
-			);
+    		id SERIAL PRIMARY KEY,
+  		chat_id INTEGER NOT NULL,
+    		message_id BIGINT NOT NULL,
+    		sender_id BIGINT NOT NULL,
+    		violation_type VARCHAR(100),
+    		description TEXT,
+    		severity VARCHAR(50),
+		action_taken VARCHAR(50),
+    		action_duration INTEGER DEFAULT 0,
+        	action_reason VARCHAR(255), 
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	        FOREIGN KEY (chat_id) REFERENCES chats(id)
+		);
             """
             
             # Выполняем создание таблиц
