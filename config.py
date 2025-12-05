@@ -1,13 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-⚙️ КОНФИГУРАЦИЯ ТЕЛЕГРАМ БОТА И АГЕНТОВ
+⚙️ КОНФИГУРАЦИЯ TELEGUARD BOT И АГЕНТОВ
+Исправленная версия с .env поддержкой для Mistral API
 """
 
 import logging
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# ============================================================================
+# ЗАГРУЗКА .ENV (ПОСТОЯННОЕ ХРАНИЛИЩЕ КЛЮЧЕЙ)
+# ============================================================================
+
+# Загружаем .env файл если существует
+ENV_FILE = Path(__file__).resolve().parent / ".env"
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE)
+else:
+    # Создаем .env автоматически при первом запуске
+    with open(ENV_FILE, "w") as f:
+        f.write("# TeleGuard Bot Configuration\n")
+        f.write("# Скопируй свой Mistral API ключ сюда:\n")
+        f.write("MISTRAL_API_KEY=ygeDdoQrYFW5iM8aVw2p18pPZ1se30ow\n")
 
 # ============================================================================
 # TELEGRAM BOT
@@ -26,6 +42,7 @@ DB_HOST = "localhost"
 DB_PORT = 5432
 DB_NAME = "teleguard"
 POSTGRES_URL = "postgresql+psycopg2://tg_user:mnvm71@localhost:5432/teleguard?sslmode=disable"
+
 # ============================================================================
 # REDIS
 # ============================================================================
@@ -68,29 +85,26 @@ QUEUE_AGENT_6_INPUT = "queue:agent6:input"
 QUEUE_AGENT_6_OUTPUT = "queue:agent6:output"
 
 # ============================================================================
-# MISTRAL AI
+# MISTRAL AI (С ПОСТОЯННЫМ ХРАНИЛИЩЕМ)
 # ============================================================================
 
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "your_mistral_key_here")
+# ✅ ЧИТАЕМ ИЗ .env (постоянно сохраняется)
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "ygeDdoQrYFW5iM8aVw2p18pPZ1se30ow")
 
 MISTRAL_MODEL = "mistral-large-latest"
 
 MISTRAL_GENERATION_PARAMS = {
-    "temperature": 0.3,   # было 0.1
-    "max_tokens": 600,    # было 300
-    "top_p": 0.95         # было 0.9
+    "temperature": 0.3,   # ✅ УВЕЛИЧЕНО: было 0.1 → менее консервативна
+    "max_tokens": 600,    # ✅ УВЕЛИЧЕНО: было 300 → больше места для анализа
+    "top_p": 0.95         # ✅ ОПТИМИЗИРОВАНО: было 0.9
 }
 
 # ============================================================================
 # МОДЕРАТОРЫ
 # ============================================================================
 
-# 👥 TELEGRAM ID'ы модераторов которые будут получать уведомления о нарушениях
 MODERATOR_IDS = [
-    1621052774,  # Твой ID (замени на свой)
-    # Добавь еще модераторов если нужно:
-    # 2345678901,
-    # 3456789012,
+    1621052774,  # Твой ID
 ]
 
 # ============================================================================
@@ -112,12 +126,12 @@ DEFAULT_RULES = [
 # ============================================================================
 
 AGENT_PORTS = {
-    1: 8001,  # Агент 1 - Преобработчик
-    2: 8002,  # Агент 2 - Анализатор
-    3: 8003,  # Агент 3 - Модератор (Mistral AI)
-    4: 8004,  # Агент 4 - Модератор (Эвристический + Mistral)
-    5: 8005,  # Агент 5 - Арбитр (Mistral AI)
-    6: 8006,  # Агент 6 - Анализ медиа (Mistral Vision)
+    1: 8001,  # Агент 1 - NLP
+    2: 8002,  # Агент 2 - Главный Mistral
+    3: 8003,  # Агент 3 - Консервативный
+    4: 8004,  # Агент 4 - Строгий
+    5: 8005,  # Агент 5 - Арбитр
+    6: 8006,  # Агент 6 - Медиа анализ
 }
 
 # ============================================================================
@@ -132,7 +146,6 @@ def setup_logging(name):
     logger = logging.getLogger(name)
     logger.setLevel(LOG_LEVEL)
     
-    # Консоль
     handler = logging.StreamHandler()
     handler.setLevel(LOG_LEVEL)
     formatter = logging.Formatter(LOG_FORMAT)
@@ -151,7 +164,6 @@ BASE_DIR = Path(__file__).resolve().parent
 LOGS_DIR = BASE_DIR / "logs"
 DATA_DIR = BASE_DIR / "data"
 
-# Создаем директории если их нет
 LOGS_DIR.mkdir(exist_ok=True)
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -159,15 +171,10 @@ DATA_DIR.mkdir(exist_ok=True)
 # ДРУГИЕ НАСТРОЙКИ
 # ============================================================================
 
-# Таймаут для запросов
 REQUEST_TIMEOUT = 30
-
-# Максимум сообщений для анализа за раз
 MAX_MESSAGES_BATCH = 100
-
-# Количество попыток повтора при ошибке
 RETRY_ATTEMPTS = 3
-RETRY_DELAY = 2  # в секундах
+RETRY_DELAY = 2
 
 # ============================================================================
 # ПРОВЕРКА КОНФИГУРАЦИИ
@@ -175,68 +182,50 @@ RETRY_DELAY = 2  # в секундах
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("⚙️  КОНФИГУРАЦИЯ TELEGUARD BOT")
+    print("⚙️ КОНФИГУРАЦИЯ TELEGUARD BOT v3.1")
     print("=" * 70)
     print(f"✅ Telegram Token: {'***' + TELEGRAM_BOT_TOKEN[-10:]}")
     print(f"✅ PostgreSQL: {DB_HOST}:{DB_PORT}/{DB_NAME}")
     print(f"✅ Redis: {REDIS_HOST}:{REDIS_PORT}")
-    print(f"✅ Mistral API: {'Настроен' if MISTRAL_API_KEY != 'your_mistral_key_here' else 'НЕ НАСТРОЕН'}")
+    print(f"✅ Mistral API Key: {'✅ Установлен' if MISTRAL_API_KEY != 'your_mistral_key_here' else '❌ НЕ установлен'}")
+    print(f"✅ Mistral Model: {MISTRAL_MODEL}")
+    print(f"✅ Temperature: {MISTRAL_GENERATION_PARAMS['temperature']}")
+    print(f"✅ Max Tokens: {MISTRAL_GENERATION_PARAMS['max_tokens']}")
     print(f"✅ Модераторы: {len(MODERATOR_IDS)} человек")
     print(f"✅ Правила: {len(DEFAULT_RULES)} правил")
     print(f"✅ Агенты: {len(AGENT_PORTS)} агентов")
+    print(f"✅ .env файл: {ENV_FILE}")
     print("=" * 70)
 
 # ============================================================================
-# ОПРЕДЕЛЕНИЕ ДЕЙСТВИЯ МОДЕРАЦИИ (БАН, МУТ, ВАРН)
+# ОПРЕДЕЛЕНИЕ ДЕЙСТВИЯ МОДЕРАЦИИ
 # ============================================================================
 
 def determine_action(violation_type: str, severity: int, confidence: float) -> dict:
     """
-    Определяет действие модерации по типу нарушения, серьезности и уверенности.
-    
-    Возвращает:
-    {
-        "action": "ban" | "mute" | "warn" | "delete" | "none",
-        "duration": int (в минутах, 0 = навсегда),
-        "reason": str,
-        "severity_level": "critical" | "high" | "medium" | "low"
-    }
+    Определяет действие модерации по типу нарушения, серьезности и уверенности
     """
-    
     actions = {
-        "profanity": {
+        "мат": {
             "low": {"action": "warn", "duration": 0, "severity": "low"},
             "medium": {"action": "mute", "duration": 60, "severity": "medium"},
             "high": {"action": "mute", "duration": 1440, "severity": "high"},
             "critical": {"action": "ban", "duration": 0, "severity": "critical"}
         },
-        "spam": {
-            "low": {"action": "delete", "duration": 0, "severity": "low"},
-            "medium": {"action": "warn", "duration": 0, "severity": "medium"},
-            "high": {"action": "mute", "duration": 120, "severity": "high"},
+        "оскорбление": {
+            "low": {"action": "warn", "duration": 0, "severity": "low"},
+            "medium": {"action": "mute", "duration": 720, "severity": "medium"},
+            "high": {"action": "ban", "duration": 0, "severity": "high"},
             "critical": {"action": "ban", "duration": 0, "severity": "critical"}
         },
-        "discrimination": {
+        "дискриминация": {
             "low": {"action": "warn", "duration": 0, "severity": "low"},
             "medium": {"action": "mute", "duration": 1440, "severity": "medium"},
             "high": {"action": "ban", "duration": 0, "severity": "high"},
             "critical": {"action": "ban", "duration": 0, "severity": "critical"}
         },
-        "flood": {
-            "low": {"action": "delete", "duration": 0, "severity": "low"},
-            "medium": {"action": "warn", "duration": 0, "severity": "medium"},
-            "high": {"action": "mute", "duration": 60, "severity": "high"},
-            "critical": {"action": "mute", "duration": 1440, "severity": "critical"}
-        },
-        "harassment": {
-            "low": {"action": "warn", "duration": 0, "severity": "low"},
-            "medium": {"action": "mute", "duration": 720, "severity": "medium"},
-            "high": {"action": "ban", "duration": 0, "severity": "high"},
-            "critical": {"action": "ban", "duration": 0, "severity": "critical"}
-        }
     }
-    
-    # Определяем уровень серьезности по severity (0-10)
+
     if severity >= 9:
         level = "critical"
     elif severity >= 7:
@@ -245,21 +234,13 @@ def determine_action(violation_type: str, severity: int, confidence: float) -> d
         level = "medium"
     else:
         level = "low"
-    
-    # Корректируем уровень по уверенности
-    if confidence < 0.5:
-        if level == "critical":
-            level = "high"
-        elif level == "high":
-            level = "medium"
-    
-    # Получаем действие из таблицы
-    violation_actions = actions.get(violation_type, actions["spam"])
+
+    violation_actions = actions.get(violation_type, actions.get("оскорбление", {}))
     action_info = violation_actions.get(level, {"action": "none", "duration": 0, "severity": level})
-    
+
     return {
         "action": action_info["action"],
         "duration": action_info["duration"],
-        "reason": f"Нарушение: {violation_type.upper()} (уровень: {level})",
+        "reason": f"Нарушение: {violation_type} (уровень: {level})",
         "severity_level": level
     }
