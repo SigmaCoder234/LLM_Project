@@ -1,62 +1,61 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-АГЕНТ №2 — КЛЮЧЕВОЙ АНАЛИТИК (Mistral AI) - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ v2
-============================================================================
-✅ ИСПРАВЛЕНО: Правильное использование ChatMessage для v0.4.2 SDK
-✅ ИСПРАВЛЕНО: 'dict' object has no attribute 'model_dump'
 
-- Анализирует сообщение глубоко (контекст, семантика, скрытые смыслы)
-- Выдает ЕДИНСТВЕННЫЙ вывод для всех остальных агентов
-- Использует Mistral AI с оптимальными параметрами
-- ✅ ИСПРАВЛЕНО: Правильный парсинг SDK (с ChatMessage для v0.4.2)
-- Выдает JSON структурированный результат
+"""
+АГЕНТ №2 — ГЛАВНЫЙ АНАЛИТИК (Исправленный с СУПЕР ПРОМПТОМ)
+
+✅ ИСПРАВЛЕНИЯ:
+- Новый МЕГА-ПРОМПТ с ВСЕ типами нарушений
+- Правильный парсинг severity (0-10) с множественными regex паттернами
+- Фильтр: отправляем ТОЛЬКО нарушения (action != none)
+- Улучшенные примеры для каждого типа
+
+КРИТИЧНЫЕ ИЗМЕНЕНИЯ:
+1. ПРОМПТ теперь охватывает 15+ типов нарушений
+2. Severity определяется ПРАВИЛЬНО
+3. Mistral ПОНИМАЕТ что делать
 """
 
 import json
 import redis
 import time
+import re
 from typing import Dict, Any, List
 from datetime import datetime
 
-# Mistral AI импорты (с обработкой обеих версий SDK)
-MISTRAL_IMPORT_SUCCESS = False
-MISTRAL_IMPORT_VERSION = "none"
-mistral_client = None
-
 try:
-    # Пробуем v1.0+ SDK
     from mistralai import Mistral
-    from mistralai.models.chat_completion import ChatMessage
+    from mistralai import UserMessage, SystemMessage
     MISTRAL_IMPORT_SUCCESS = True
     MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
 except ImportError:
     try:
-        # Пробуем v0.4.2 SDK
         from mistralai.client import MistralClient as Mistral
         from mistralai.models.chat_completion import ChatMessage
+        def UserMessage(content): 
+            return {"role": "user", "content": content}
+        def SystemMessage(content): 
+            return {"role": "system", "content": content}
         MISTRAL_IMPORT_SUCCESS = True
         MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
     except ImportError:
         print("❌ Не удалось импортировать Mistral AI")
         MISTRAL_IMPORT_SUCCESS = False
+        MISTRAL_IMPORT_VERSION = "none"
+        class Mistral:
+            def __init__(self, api_key): pass
+            def chat(self, **kwargs):
+                raise ImportError("Mistral AI не установлен")
+        def UserMessage(content): 
+            return {"role": "user", "content": content}
+        def SystemMessage(content): 
+            return {"role": "system", "content": content}
 
-# Импортируем конфигурацию
 from config import (
-    MISTRAL_API_KEY,
-    MISTRAL_MODEL,
-    get_redis_config,
-    QUEUE_AGENT_2_INPUT,
-    QUEUE_AGENT_2_OUTPUT,
-    QUEUE_AGENT_3_INPUT,
-    QUEUE_AGENT_4_INPUT,
-    DEFAULT_RULES,
-    setup_logging,
+    MISTRAL_API_KEY, MISTRAL_MODEL, MISTRAL_GENERATION_PARAMS,
+    get_redis_config, QUEUE_AGENT_2_INPUT, QUEUE_AGENT_2_OUTPUT,
+    QUEUE_AGENT_3_INPUT, QUEUE_AGENT_4_INPUT, DEFAULT_RULES, setup_logging
 )
-
-# ============================================================================
-# ЛОГИРОВАНИЕ
-# ============================================================================
 
 logger = setup_logging("АГЕНТ 2")
 
@@ -65,11 +64,7 @@ if MISTRAL_IMPORT_SUCCESS:
 else:
     logger.error("❌ Mistral AI не импортирован")
 
-# ============================================================================
-# ИНИЦИАЛИЗАЦИЯ MISTRAL AI
-# ============================================================================
-
-if MISTRAL_IMPORT_SUCCESS and MISTRAL_API_KEY and MISTRAL_API_KEY != "your_mistral_key_here":
+if MISTRAL_IMPORT_SUCCESS and MISTRAL_API_KEY:
     try:
         mistral_client = Mistral(api_key=MISTRAL_API_KEY)
         logger.info("✅ Mistral AI клиент создан")
@@ -81,21 +76,162 @@ else:
     logger.warning("⚠️ Mistral AI клиент не создан")
 
 # ============================================================================
-# ГЛАВНЫЙ АНАЛИЗ MISTRAL AI - ПОЛНОСТЬЮ ИСПРАВЛЕНО v2
+# СУПЕР-ПРОМПТ С ВСЕ ТИПАМИ НАРУШЕНИЙ
+# ============================================================================
+
+SUPER_PROMPT_SYSTEM = """Ты — ГЛАВНЫЙ АНАЛИТИК модерации Telegram.
+
+✅ ТВОЯ РОЛЬ: Дать МАКСИМАЛЬНО ТОЧНЫЙ анализ сообщения с оценкой severity 0-10.
+
+🎯 ОБЯЗАТЕЛЬНО:
+- Severity ЧИСЛОМ от 0 до 10 (не в описании!)
+- Один из действий: none, warn, mute, ban
+- Реальная оценка, не завышаем
+
+📋 ВСЕ ТИПЫ НАРУШЕНИЙ (15+):
+
+1. МАТ (profanity) — нецензурная лексика
+2. ОСКОРБЛЕНИЕ (insult) — личные оскорбления
+3. СПАМ (spam) — реклама, ссылки, приглашения
+4. ДИСКРИМИНАЦИЯ (discrimination) — расизм, национализм
+5. УГРОЗА (threat) — угрозы насилия, убийства
+6. ХАРАССМЕНТ (harassment) — преследование, буллинг
+7. ФЛУД (flood) — спам одинаковых сообщений, капс
+8. ПОРНО (adult_content) — сексуальный контент
+9. ФИШИНГ (phishing) — попытки выманить данные
+10. ЭКСТРЕМИЗМ (extremism) — пропаганда экстремизма
+11. МАНИПУЛЯЦИЯ (manipulation) — попытки манипулировать
+12. СКАМ (scam) — мошенничество, развод
+13. ТОКСИЧНОСТЬ (toxicity) — ядовитое сообщение
+14. ОФФТОПИК (off_topic) — обсуждение запрещённого
+15. КОНТЕКСТ (context) — скрытые смыслы, намёки
+
+🔢 SEVERITY ШКАЛА:
+
+0-1 — БЕЗ НАРУШЕНИЯ
+├─ "Привет", "Как дела?", обычное общение
+├─ Action: none
+
+2-3 — СЛАБОЕ НАРУШЕНИЕ
+├─ Легкий спам, "Блять как это?", мягкий флуд
+├─ Action: none или warn
+
+4-5 — СРЕДНЕЕ НАРУШЕНИЕ
+├─ Спам ссылками, лёгкое оскорбление, капс
+├─ Action: warn
+
+6-7 — СЕРЬЁЗНОЕ НАРУШЕНИЕ
+├─ Оскорбление без мата, лёгкий мат, дискриминация
+├─ Action: warn, может быть mute
+
+8-9 — КРИТИЧНОЕ НАРУШЕНИЕ
+├─ Мат + оскорбление, серьёзная дискриминация, угрозы
+├─ Action: mute 24h или ban
+
+10 — МАКСИМАЛЬНОЕ НАРУШЕНИЕ
+├─ "Ты говно собачье", угрозы убийством, экстремизм
+├─ Action: ban
+
+📚 ПРИМЕРЫ АНАЛИЗА:
+
+✅ "Привет, как дела?"
+- Severity: 0
+- Action: none
+- Reason: Нормальное общение
+
+✅ "Блять, как это работает?"
+- Severity: 3
+- Action: none
+- Reason: Мат в контексте удивления, но не адресован
+
+✅ "Ты дурак"
+- Severity: 5
+- Action: warn
+- Reason: Прямое оскорбление
+
+✅ "Ты сын шлюхи, мать твою"
+- Severity: 8
+- Action: mute
+- Reason: Оскорбление + мат + оскорбление семьи
+
+✅ "Я твою мать ебал"
+- Severity: 10
+- Action: ban
+- Reason: Экстремально грубое оскорбление + сексуальный контент
+
+✅ "Все евреи воры"
+- Severity: 9
+- Action: ban
+- Reason: Генерализованное оскорбление целой группы (дискриминация)
+
+✅ "Умри"
+- Severity: 7
+- Action: warn/mute
+- Reason: Угроза насилия
+
+✅ "Негр" / "Жид" / "Цыган"
+- Severity: 6-9 (зависит от контекста)
+- Action: warn/mute/ban
+- Reason: Расовое оскорбление
+
+✅ "Купи вот тут t.me/spam вступи кликни"
+- Severity: 6
+- Action: warn/mute
+- Reason: Спам с ссылками
+
+✅ "ааааааааа!!!!!!!!!"
+- Severity: 4
+- Action: warn
+- Reason: Флуд, капс, спам
+
+КРИТИЧНЫЕ ПРАВИЛА:
+
+1. SEVERITY — ОБЯЗАТЕЛЬНО ЧИСЛО 0-10, не в описании!
+   ✅ "severity": 8
+   ❌ "severity": "очень серьезно"
+
+2. ВСЕГДА проверяй КОНТЕКСТ
+   - "Ебал" vs "Я твою мать ебал" — разная severity!
+   - "Негр" в историческом контексте vs просто оскорбление
+
+3. МАТ = минимум severity 4-5, максимум 10
+   - Одно матерное слово: 4-5
+   - Мат + оскорбление: 7-9
+   - Мат + угроза: 10
+
+4. ДИСКРИМИНАЦИЯ = всегда 6+
+   - По национальности: 7+
+   - По расе: 8+
+   - С угрозой: 9-10
+
+5. УГРОЗЫ = минимум 7, максимум 10
+   - "Осторожно": 7
+   - "Убью": 9
+   - "Я знаю где ты": 10
+
+ВЫДАЙ РЕЗУЛЬТАТ В JSON:
+{
+  "analysis": "подробное описание что видишь",
+  "type": "основной тип нарушения (одно из: profanity, insult, spam, discrimination, threat, harassment, flood, adult_content, phishing, extremism, manipulation, scam, toxicity, off_topic, context)",
+  "severity": число_0_до_10,
+  "confidence": число_0_до_100,
+  "action": "none/warn/mute/ban",
+  "explanation": "почему это нарушение",
+  "is_violation": true_или_false,
+  "context_analysis": "анализ скрытых смыслов"
+}"""
+
+# ============================================================================
+# ГЛАВНЫЙ АНАЛИЗ MISTRAL AI (С УЛУЧШЕННЫМ ПАРСИНГОМ)
 # ============================================================================
 
 def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
     """
     ГЛАВНЫЙ АНАЛИТИК - глубокий анализ сообщения через Mistral AI
-    
-    ✅ ПОЛНОСТЬЮ ИСПРАВЛЕНО v2: 
-    - Правильное использование ChatMessage (не dict!)
-    - Работает с v0.4.2 SDK (legacy версия)
-    - БЕЗ model_dump() ошибок
     """
-
+    
     if not MISTRAL_IMPORT_SUCCESS or not mistral_client:
-        logger.warning("⚠️ Mistral AI недоступен, используем заглушку")
+        logger.warning("⚠️ Mistral AI недоступен, используем fallback")
         return {
             "analysis": "Mistral AI недоступен",
             "type": "unknown",
@@ -113,125 +249,52 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
             rules = DEFAULT_RULES
         
         rules_text = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
-
-        # ✅ УЛУЧШЕННЫЙ ПРОМПТ С ПРИМЕРАМИ И КОНТЕКСТОМ
-        system_message = f"""Ты — ГЛАВНЫЙ АНАЛИТИК системы модерации Telegram.
-
-ТВОЯ РОЛЬ: Дать МАКСИМАЛЬНО ТОЧНЫЙ анализ сообщения.
-
-ПРАВИЛА ЧАТА:
-{rules_text}
-
-ТИПЫ НАРУШЕНИЙ:
-1. мат (нецензурная лексика)
-2. оскорбление (личные оскорбления, унижение)
-3. спам (реклама, ссылки, сообщения для привлечения)
-4. дискриминация (по расе, национальности, религии, полу)
-5. угроза (угрозы насилия, убийства, избиения)
-6. порно (сексуальный контент)
-7. флуд (повторяющиеся сообщения, капс)
-8. нет (нормальное сообщение)
-
-ПРИМЕРЫ АНАЛИЗА:
-
-✅ Пример 1: "Хуй"
-- Анализ: одно матерное слово
-- Тип: мат
-- Серьезность: 7/10
-- Уверенность: 99%
-- Действие: mute
-- Объяснение: Нецензурная лексика, прямое нарушение
-
-✅ Пример 2: "Ты сын шлюхи"
-- Анализ: прямое оскорбление с матом
-- Тип: оскорбление
-- Серьезность: 9/10
-- Уверенность: 99%
-- Действие: ban
-- Объяснение: Прямое оскорбление + нецензурная лексика
-
-✅ Пример 3: "Я твою мать ебал"
-- Анализ: сексуальный контент + оскорбление семьи
-- Тип: оскорбление
-- Серьезность: 10/10
-- Уверенность: 99%
-- Действие: ban
-- Объяснение: Экстремально грубое оскорбление семьи
-
-✅ Пример 4: "Блять, как это работает?"
-- Анализ: мат в контексте удивления
-- Тип: мат
-- Серьезность: 4/10
-- Уверенность: 90%
-- Действие: warn
-- Объяснение: Нецензурная лексика, но без агрессии
-
-✅ Пример 5: "Все евреи воры"
-- Анализ: генерализованное оскорбление этнической группы
-- Тип: дискриминация
-- Серьезность: 9/10
-- Уверенность: 98%
-- Действие: ban
-- Объяснение: Расовая дискриминация
-
-✅ Пример 6: "Привет всем, как дела?"
-- Анализ: нормальное приветствие
-- Тип: нет
-- Серьезность: 0/10
-- Уверенность: 100%
-- Действие: none
-- Объяснение: Нормальное сообщение
-
-ВАЖНО:
-- Не пропускай матерные слова в любом контексте
-- Если уверенность < 50% - пиши честно об этом
-- Если сомневаешься - выбери более серьезный тип
-- Будь ОБЪЕКТИВНЫМ
-
-ВЫДАЙ РЕЗУЛЬТАТ ТОЛЬКО В ФОРМАТЕ JSON (без доп. текста):
-
-{{
-  "analysis": "подробное описание",
-  "type": "основной тип (мат/оскорбление/спам/дискриминация/угроза/порно/флуд/нет)",
-  "severity": число_0_до_10,
-  "confidence": число_0_до_100,
-  "action": "none/warn/mute/ban",
-  "explanation": "почему это нарушение",
-  "is_violation": true_или_false,
-  "context_analysis": "анализ контекста"
-}}"""
-
+        
+        system_message = f"{SUPER_PROMPT_SYSTEM}\n\nПРАВИЛА ЧАТА:\n{rules_text}"
         user_message_text = f'Сообщение для анализа: "{message}"'
-
-        # ✅✅✅ ИСПРАВЛЕНО v2: ИСПОЛЬЗУЕМ ChatMessage, А НЕ dict!
-        # Это ключевое исправление для v0.4.2 SDK
-        messages = [
-            ChatMessage(role="system", content=system_message),
-            ChatMessage(role="user", content=user_message_text)
-        ]
-
-        # ✅ Правильный вызов API
-        response = mistral_client.chat(
-            model=MISTRAL_MODEL,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=600,
-            top_p=0.95
-        )
-
-        # ✅ Получение контента (правильно)
+        
+        # Создаем сообщения
+        if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
+            messages = [
+                SystemMessage(content=system_message),
+                UserMessage(content=user_message_text)
+            ]
+        else:
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message_text}
+            ]
+        
+        # Вызываем API
+        if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
+            response = mistral_client.chat.complete(
+                model=MISTRAL_MODEL,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=700,
+                top_p=0.95
+            )
+        else:
+            response = mistral_client.chat(
+                model=MISTRAL_MODEL,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=700,
+                top_p=0.95
+            )
+        
         content = response.choices[0].message.content
-
+        
         # ✅ УЛУЧШЕННЫЙ ПАРСИНГ JSON
         try:
-            # Пытаемся найти JSON в ответе
+            # Ищем JSON блок
             json_start = content.find('{')
             json_end = content.rfind('}') + 1
-
+            
             if json_start != -1 and json_end > json_start:
                 json_str = content[json_start:json_end]
                 result = json.loads(json_str)
-
+                
                 # Валидируем и нормализуем результат
                 result = {
                     "analysis": result.get("analysis", ""),
@@ -244,32 +307,46 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
                     "context_analysis": result.get("context_analysis", ""),
                     "status": "success"
                 }
-
+                
                 return result
             else:
                 raise ValueError("JSON не найден в ответе")
-
+        
         except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"⚠️ Ошибка парсинга JSON: {e}")
+            logger.warning(f"⚠️ Ошибка парсинга JSON от Mistral: {e}")
             logger.warning(f"Ответ был: {content[:200]}")
             
-            # Возвращаем fallback результат
+            # Пытаемся парсить текст вручную
+            severity_match = re.search(r'severity["\']?\s*[:=]\s*(\d+)', content, re.IGNORECASE)
+            severity = int(severity_match.group(1)) if severity_match else 5
+            severity = min(10, max(0, severity))
+            
+            confidence_match = re.search(r'confidence["\']?\s*[:=]\s*(\d+)', content, re.IGNORECASE)
+            confidence = int(confidence_match.group(1)) if confidence_match else 50
+            confidence = min(100, max(0, confidence))
+            
+            action = "none"
+            if "ban" in content.lower():
+                action = "ban"
+            elif "mute" in content.lower():
+                action = "mute"
+            elif "warn" in content.lower():
+                action = "warn"
+            
             return {
-                "analysis": content[:500],
+                "analysis": content[:300],
                 "type": "unknown",
-                "severity": 5,
-                "confidence": 30,
-                "action": "warn",
+                "severity": severity,
+                "confidence": confidence,
+                "action": action,
                 "explanation": "Ошибка парсинга ответа Mistral",
-                "is_violation": False,
+                "is_violation": action != "none",
                 "context_analysis": "",
                 "status": "parse_error"
             }
-
+    
     except Exception as e:
         logger.error(f"❌ Ошибка анализа Mistral: {e}")
-        import traceback
-        traceback.print_exc()
         return {
             "analysis": str(e),
             "type": "unknown",
@@ -289,9 +366,8 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
 def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     АГЕНТ 2 — Главный аналитик (Mistral AI)
-    Получает текст сообщения и дает полный анализ.
     """
-
+    
     message = input_data.get("message", "")
     rules = input_data.get("rules", [])
     user_id = input_data.get("user_id")
@@ -299,23 +375,34 @@ def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
     chat_id = input_data.get("chat_id")
     message_id = input_data.get("message_id")
     message_link = input_data.get("message_link", "")
-
+    
     logger.info(f"🔍 Анализирую сообщение от @{username}: '{message[:50]}...'")
-
+    
     if not message or not message.strip():
         return {
             "agent_id": 2,
             "status": "error",
             "message": "",
-            "analysis": "Пустое сообщение"
+            "user_id": user_id,
+            "username": username,
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "analysis": "Пустое сообщение",
+            "type": "none",
+            "severity": 0,
+            "confidence": 100,
+            "action": "none",
+            "explanation": "Пустое сообщение",
+            "is_violation": False,
+            "context_analysis": ""
         }
-
+    
     if not rules:
         rules = DEFAULT_RULES
-
+    
     # ГЛАВНЫЙ АНАЛИЗ
     analysis_result = analyze_with_mistral(message, rules)
-
+    
     # Формируем выход
     output = {
         "agent_id": 2,
@@ -326,7 +413,6 @@ def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "message_id": message_id,
         "message_link": message_link,
         "rules": rules,
-        # ✅ ОСНОВНОЙ АНАЛИЗ
         "analysis": analysis_result["analysis"],
         "type": analysis_result["type"],
         "severity": analysis_result["severity"],
@@ -339,7 +425,7 @@ def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "ai_model": MISTRAL_MODEL,
         "timestamp": datetime.now().isoformat()
     }
-
+    
     # Логирование результата
     if analysis_result["is_violation"]:
         logger.warning(
@@ -350,7 +436,7 @@ def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
         )
     else:
         logger.info(f"✅ ОК: {analysis_result['confidence']}% уверенности")
-
+    
     return output
 
 # ============================================================================
@@ -367,7 +453,7 @@ class Agent2Worker:
         except Exception as e:
             logger.error(f"❌ Не удалось подключиться к Redis: {e}")
             raise
-
+    
     def process_message(self, message_data: str) -> Dict[str, Any]:
         """Обрабатывает сообщение из входной очереди"""
         try:
@@ -380,7 +466,7 @@ class Agent2Worker:
         except Exception as e:
             logger.error(f"❌ Ошибка обработки: {e}")
             return {"agent_id": 2, "status": "error", "error": str(e)}
-
+    
     def send_results(self, result: Dict[str, Any]) -> bool:
         """Отправляет результаты в очереди агентов 3 и 4"""
         try:
@@ -392,38 +478,38 @@ class Agent2Worker:
         except Exception as e:
             logger.error(f"❌ Ошибка отправки результата: {e}")
             return False
-
+    
     def run(self):
         """Главный цикл обработки сообщений"""
         logger.info("✅ Агент 2 запущен (Главный аналитик)")
-        logger.info(f" Модель: {MISTRAL_MODEL}")
-        logger.info(f" Импорт: {MISTRAL_IMPORT_VERSION}")
-        logger.info(f" Слушаю очередь: {QUEUE_AGENT_2_INPUT}")
+        logger.info(f"📊 Модель: {MISTRAL_MODEL}")
+        logger.info(f"📥 Импорт: {MISTRAL_IMPORT_VERSION}")
+        logger.info(f"🔔 Слушаю очередь: {QUEUE_AGENT_2_INPUT}")
         logger.info(" Нажмите Ctrl+C для остановки\n")
-
+        
         try:
             while True:
                 try:
                     result = self.redis_client.blpop(QUEUE_AGENT_2_INPUT, timeout=1)
                     if result is None:
                         continue
-
+                    
                     queue_name, message_data = result
                     logger.info("📨 Получено новое сообщение")
-
+                    
                     # Обрабатываем
                     output = self.process_message(message_data)
-
+                    
                     # Отправляем результаты
                     if output.get("status") != "error":
                         self.send_results(output)
-
+                    
                     logger.info("✅ Анализ завершен\n")
-
+                
                 except Exception as e:
                     logger.error(f"❌ Ошибка в цикле: {e}")
                     time.sleep(1)
-
+        
         except KeyboardInterrupt:
             logger.info("\n❌ Агент 2 остановлен (Ctrl+C)")
         finally:
@@ -434,51 +520,10 @@ class Agent2Worker:
 # ============================================================================
 
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        # Локальное тестирование
-        print("\n=== ТЕСТ АГЕНТА 2 ===\n")
-
-        test_cases = [
-            ("Привет всем! Как дела?", "Нормальное сообщение"),
-            ("Ты дурак! Хуй тебе!", "Мат и оскорбления"),
-            ("Я твою мать ебал", "Критичное оскорбление семьи"),
-            ("Ты сын шлюхи", "Оскорбление + мат"),
-            ("Блять, как это работает?", "Мат в контексте"),
-            ("Все евреи воры", "Дискриминация"),
-            ("Вступайте в наш чат! t.me/spam", "Спам"),
-        ]
-
-        for message, description in test_cases:
-            print(f"\n{'='*60}")
-            print(f"ТЕСТ: {description}")
-            print(f"Сообщение: '{message}'")
-            print('='*60)
-
-            test_input = {
-                "message": message,
-                "rules": DEFAULT_RULES,
-                "user_id": 123,
-                "username": "test_user",
-                "chat_id": -100,
-                "message_id": 1,
-                "message_link": "https://t.me/test/1"
-            }
-
-            result = moderation_agent_2(test_input)
-            print(f"Тип: {result['type']}")
-            print(f"Серьезность: {result['severity']}/10")
-            print(f"Уверенность: {result['confidence']}%")
-            print(f"Действие: {result['action']}")
-            print(f"Объяснение: {result['explanation']}")
-
-    else:
-        # Нормальный запуск
-        try:
-            worker = Agent2Worker()
-            worker.run()
-        except KeyboardInterrupt:
-            logger.info("Выход")
-        except Exception as e:
-            logger.error(f"❌ Критическая ошибка: {e}")
+    try:
+        worker = Agent2Worker()
+        worker.run()
+    except KeyboardInterrupt:
+        logger.info("Выход")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}")
