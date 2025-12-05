@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-АГЕНТ №2 — КЛЮЧЕВОЙ АНАЛИТИК (Mistral AI) - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
+АГЕНТ №2 — КЛЮЧЕВОЙ АНАЛИТИК (Mistral AI) - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ v2
 ============================================================================
+✅ ИСПРАВЛЕНО: Правильное использование ChatMessage для v0.4.2 SDK
 ✅ ИСПРАВЛЕНО: 'dict' object has no attribute 'model_dump'
 
 - Анализирует сообщение глубоко (контекст, семантика, скрытые смыслы)
 - Выдает ЕДИНСТВЕННЫЙ вывод для всех остальных агентов
 - Использует Mistral AI с оптимальными параметрами
-- ИСПРАВЛЕНО: Правильный парсинг SDK (БЕЗ model_dump)
+- ✅ ИСПРАВЛЕНО: Правильный парсинг SDK (с ChatMessage для v0.4.2)
 - Выдает JSON структурированный результат
 """
 
@@ -19,30 +20,26 @@ from typing import Dict, Any, List
 from datetime import datetime
 
 # Mistral AI импорты (с обработкой обеих версий SDK)
+MISTRAL_IMPORT_SUCCESS = False
+MISTRAL_IMPORT_VERSION = "none"
+mistral_client = None
+
 try:
+    # Пробуем v1.0+ SDK
     from mistralai import Mistral
-    from mistralai import UserMessage, SystemMessage
+    from mistralai.models.chat_completion import ChatMessage
     MISTRAL_IMPORT_SUCCESS = True
     MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
 except ImportError:
     try:
+        # Пробуем v0.4.2 SDK
         from mistralai.client import MistralClient as Mistral
         from mistralai.models.chat_completion import ChatMessage
-        def UserMessage(content): 
-            return {"role": "user", "content": content}
-        def SystemMessage(content): 
-            return {"role": "system", "content": content}
         MISTRAL_IMPORT_SUCCESS = True
         MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
     except ImportError:
         print("❌ Не удалось импортировать Mistral AI")
         MISTRAL_IMPORT_SUCCESS = False
-        MISTRAL_IMPORT_VERSION = "none"
-        class Mistral:
-            def __init__(self, api_key): 
-                pass
-            def chat(self, **kwargs):
-                raise ImportError("Mistral AI не установлен")
 
 # Импортируем конфигурацию
 from config import (
@@ -84,16 +81,17 @@ else:
     logger.warning("⚠️ Mistral AI клиент не создан")
 
 # ============================================================================
-# ГЛАВНЫЙ АНАЛИЗ MISTRAL AI (ОСНОВНАЯ ФУНКЦИЯ) - ПОЛНОСТЬЮ ИСПРАВЛЕНО
+# ГЛАВНЫЙ АНАЛИЗ MISTRAL AI - ПОЛНОСТЬЮ ИСПРАВЛЕНО v2
 # ============================================================================
 
 def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
     """
     ГЛАВНЫЙ АНАЛИТИК - глубокий анализ сообщения через Mistral AI
     
-    ✅ ПОЛНОСТЬЮ ИСПРАВЛЕНО: 
-    - Правильное обращение к SDK ответу (БЕЗ model_dump())
-    - Используем response.choices[0].message.content
+    ✅ ПОЛНОСТЬЮ ИСПРАВЛЕНО v2: 
+    - Правильное использование ChatMessage (не dict!)
+    - Работает с v0.4.2 SDK (legacy версия)
+    - БЕЗ model_dump() ошибок
     """
 
     if not MISTRAL_IMPORT_SUCCESS or not mistral_client:
@@ -205,38 +203,23 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
 
         user_message_text = f'Сообщение для анализа: "{message}"'
 
-        # Создаем сообщения
-        if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
-            messages = [
-                SystemMessage(content=system_message),
-                UserMessage(content=user_message_text)
-            ]
-        else:
-            messages = [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message_text}
-            ]
+        # ✅✅✅ ИСПРАВЛЕНО v2: ИСПОЛЬЗУЕМ ChatMessage, А НЕ dict!
+        # Это ключевое исправление для v0.4.2 SDK
+        messages = [
+            ChatMessage(role="system", content=system_message),
+            ChatMessage(role="user", content=user_message_text)
+        ]
 
-        # ✅ ИСПРАВЛЕНО: Правильный вызов API и получение ответа
-        if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
-            response = mistral_client.chat.complete(
-                model=MISTRAL_MODEL,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=600,
-                top_p=0.95
-            )
-        else:
-            response = mistral_client.chat(
-                model=MISTRAL_MODEL,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=600,
-                top_p=0.95
-            )
+        # ✅ Правильный вызов API
+        response = mistral_client.chat(
+            model=MISTRAL_MODEL,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=600,
+            top_p=0.95
+        )
 
-        # ✅✅✅ ИСПРАВЛЕНО: БЕЗ model_dump()!
-        # Используем правильный способ получения контента
+        # ✅ Получение контента (правильно)
         content = response.choices[0].message.content
 
         # ✅ УЛУЧШЕННЫЙ ПАРСИНГ JSON
