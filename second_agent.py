@@ -283,7 +283,15 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
                 top_p=0.95
             )
         
-        content = response.choices[0].message.content
+        message_obj = response.choices[0].message
+
+        if hasattr(message_obj, 'content'):
+            content = message_obj.content
+            if not isinstance(content, str):
+                content = str(content)
+        else:
+            content = str(message_obj)
+
         
         # ✅ УЛУЧШЕННЫЙ ПАРСИНГ JSON
         try:
