@@ -2,239 +2,449 @@
 # -*- coding: utf-8 -*-
 
 """
-АГЕНТ №6 — Анализатор медиа контента с Mistral Vision
+АГЕНТ №6 — АНАЛИЗ МЕДИА (Фото, видео через ffmpeg, и другое)
+
+✅ ФУНКЦИОНАЛ:
+- Анализирует фотографии через Mistral Vision API
+- Поддерживает: PNG, JPG, GIF, WebP
+- Для видео: извлекает кадр через ffmpeg → анализирует как фото
+- Определяет нарушения в изображениях (порно, насилие, etc.)
+- Severity для медиа: 0-10
+
+📸 ПОДДЕРЖИВАЕМЫЕ ФОРМАТЫ:
+✅ Фото: PNG, JPG, GIF, WebP, TIFF
+✅ Видео (через ffmpeg): MP4, MKV, WebM, AVI (извлекается первый кадр)
+❌ Аудио: MP3, WAV, OGG (нужна ручная обработка)
+
+⚠️ ТРЕБОВАНИЯ:
+- pip install requests pillow ffmpeg-python
+- ffmpeg должен быть установлен на машину
 """
 
 import json
-import base64
-import requests
 import redis
 import time
-from pathlib import Path
-from typing import Dict, Any
+import asyncio
+import requests
+import base64
+import os
+import subprocess
+from typing import Dict, Any, Optional, List
 from datetime import datetime
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import threading
+from pathlib import Path
 import logging
 
-# Импорт конфигурации и БД
-from config import (
-    MISTRAL_API_KEY,
-    MISTRAL_MODEL,
-    MISTRAL_GENERATION_PARAMS,
-    get_redis_config,
-    MEDIA_DIR,
-    POSTGRES_URL,
-    AGENT_PORTS,
-    setup_logging,
-    TELEGRAM_BOT_TOKEN,
-)
+try:
+    from mistralai import Mistral
+    from mistralai import UserMessage, SystemMessage
+    MISTRAL_IMPORT_SUCCESS = True
+    MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
+except ImportError:
+    try:
+        from mistralai.client import MistralClient as Mistral
+        def UserMessage(content): 
+            return {"role": "user", "content": content}
+        def SystemMessage(content): 
+            return {"role": "system", "content": content}
+        MISTRAL_IMPORT_SUCCESS = True
+        MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
+    except ImportError:
+        MISTRAL_IMPORT_SUCCESS = False
+        MISTRAL_IMPORT_VERSION = "none"
 
-from sqlalchemy.orm import sessionmaker
-from your_models import Chat, MediaFile, get_db_engine  # Импорт моделей и движка БД (адаптируй под свой проект)
+from config import (
+    MISTRAL_API_KEY, MISTRAL_MODEL, MISTRAL_GENERATION_PARAMS,
+    get_redis_config, QUEUE_AGENT_6_INPUT, QUEUE_AGENT_5_INPUT,
+    setup_logging
+)
 
 logger = setup_logging("АГЕНТ 6")
 
-engine = get_db_engine()
-SessionLocal = sessionmaker(bind=engine)
-
-# Инициализация Redis и Mistral
-redis_client = redis.Redis(**get_redis_config())
-
-try:
-    from mistralai import Mistral, ChatMessage
-    from mistralai import UserMessage, SystemMessage
-    mistral_client = Mistral(api_key=MISTRAL_API_KEY)
-    logger.info(f"✅ Mistral AI Vision клиент создан")
-except Exception as e:
-    logger.error(f"❌ Не удалось инициализировать Mistral Vision: {e}")
+if MISTRAL_IMPORT_SUCCESS:
+    logger.info(f"✅ Mistral AI импортирован успешно ({MISTRAL_IMPORT_VERSION})")
+    try:
+        mistral_client = Mistral(api_key=MISTRAL_API_KEY)
+        logger.info("✅ Mistral AI клиент для Vision создан")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания клиента: {e}")
+        mistral_client = None
+else:
+    logger.error("❌ Mistral AI не импортирован")
     mistral_client = None
 
-def download_telegram_file(file_id: str, local_path: Path):
-    """Скачивает файл из Telegram по file_id и сохраняет в local_path"""
+# ============================================================================
+# РАБОТА С ВИДЕО (ffmpeg)
+# ============================================================================
+
+def extract_first_frame_from_video(video_path: str, output_path: str = None) -> Optional[str]:
+    """
+    Извлекает первый кадр из видео через ffmpeg
+    
+    Args:
+        video_path: путь к видеофайлу
+        output_path: путь где сохранить фрейм (по умолчанию /tmp)
+    
+    Returns:
+        Путь к сохранённому изображению или None если ошибка
+    """
+    
+    if not os.path.exists(video_path):
+        logger.error(f"❌ Видеофайл не найден: {video_path}")
+        return None
+    
     try:
-        # Получаем путь файла
-        resp = requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
+        import ffmpeg
+        logger.info(f"🎬 Извлекаю первый кадр из видео: {video_path}")
+        
+        if output_path is None:
+            output_path = f"/tmp/video_frame_{int(time.time())}.jpg"
+        
+        # Используем ffmpeg-python
+        (
+            ffmpeg
+            .input(video_path)
+            .filter('scale', 1280, -1)  # Масштабируем до 1280px ширина
+            .output(output_path, vframes=1)  # Берём первый кадр
+            .run(capture_stdout=True, capture_stderr=True)
         )
-        resp.raise_for_status()
-        file_path = resp.json()['result']['file_path']
-        # Скачиваем файл напрямую
-        file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
-        file_resp = requests.get(file_url)
-        file_resp.raise_for_status()
-        with open(local_path, 'wb') as f:
-            f.write(file_resp.content)
-        logger.info(f"✅ Файл Telegram {file_id} сохранён в {local_path}")
-        return True
+        
+        if os.path.exists(output_path):
+            logger.info(f"✅ Кадр успешно извлечён: {output_path}")
+            return output_path
+        
+    except ImportError:
+        logger.warning("⚠️ ffmpeg-python не установлен, пытаю subprocess")
+        
+        # Fallback: использую subprocess напрямую
+        try:
+            output_path = f"/tmp/video_frame_{int(time.time())}.jpg"
+            cmd = [
+                "ffmpeg",
+                "-i", video_path,
+                "-vframes", "1",
+                "-vf", "scale=1280:-1",
+                "-y",  # Перезаписать если существует
+                output_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            
+            if result.returncode == 0 and os.path.exists(output_path):
+                logger.info(f"✅ Кадр успешно извлечён: {output_path}")
+                return output_path
+            else:
+                logger.error(f"❌ Ошибка ffmpeg: {result.stderr.decode()}")
+                return None
+        
+        except FileNotFoundError:
+            logger.error("❌ ffmpeg не установлен на машину")
+            logger.info("   Установи: apt-get install ffmpeg")
+            return None
+        except subprocess.TimeoutExpired:
+            logger.error("❌ Timeout при извлечении кадра (видео слишком большое?)")
+            return None
+    
     except Exception as e:
-        logger.error(f"❌ Ошибка скачивания файла {file_id}: {e}")
-        return False
+        logger.error(f"❌ Ошибка при извлечении кадра: {e}")
+        return None
 
-def analyze_media_with_mistral(local_path: str, media_type: str, caption: str = "") -> dict:
-    """Анализирует медиа файл через Mistral Vision с передачей base64 изображения"""
-    if mistral_client is None:
-        logger.warning("⚠️ Mistral Vision не доступен")
-        return {"is_suspicious": False, "reason": "Mistral Vision недоступен", "status": "error"}
+# ============================================================================
+# АНАЛИЗ ИЗОБРАЖЕНИЙ ЧЕРЕЗ MISTRAL VISION
+# ============================================================================
 
-    try:
-        with open(local_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode()
-
-        # Определяем mime type для передачи (пример)
-        if media_type in ['photo', 'image']:
-            mistral_media_type = "image/jpeg"
-        elif media_type == 'video':
-            mistral_media_type = "video/mp4"
-        else:
-            mistral_media_type = "application/octet-stream"
-
-        system_message = f"Ты — модератор медиа контента в Telegram. Проанализируй данное {media_type} на нарушение правил."
-
-        messages = [
-            SystemMessage(content=system_message),
-            UserMessage(content=[
-                {"type": "text", "text": f"Описание: {caption}"},
-                {"type": "image_url", "image_url": {"url": f"data:{mistral_media_type};base64,{image_data}"}}
-            ]),
-        ]
-
-        response = mistral_client.chat.complete(
-            model=MISTRAL_MODEL,
-            messages=messages,
-            temperature=MISTRAL_GENERATION_PARAMS.get("temperature", 0.1),
-            max_tokens=MISTRAL_GENERATION_PARAMS.get("max_tokens", 300),
-            top_p=MISTRAL_GENERATION_PARAMS.get("top_p", 0.9),
-        )
-        content = response.choices[0].message.content
-        content_lower = content.lower()
-
-        suspicion_score = 0
-        if "подозрительность:" in content_lower:
-            try:
-                line = [l for l in content.split('\n') if 'подозрительность:' in l.lower()][0]
-                suspicion_score = int(''.join(filter(str.isdigit, line))) if any(c.isdigit() for c in line) else 0
-            except:
-                suspicion_score = 0
-
-        recommendation = "ALLOW"
-        if "block" in content_lower:
-            recommendation = "BLOCK"
-        elif "review" in content_lower:
-            recommendation = "REVIEW"
-
-        is_suspicious = recommendation in ["BLOCK", "REVIEW"]
-        confidence = 0.75
-        if "уверенность:" in content_lower:
-            try:
-                line = [l for l in content.split('\n') if 'уверенность:' in l.lower()][0]
-                confidence = int(''.join(filter(str.isdigit, line))) / 100.0 if any(c.isdigit() for c in line) else 0.75
-            except:
-                confidence = 0.75
-
+def analyze_image_with_mistral(image_path: str) -> Dict[str, Any]:
+    """
+    Анализирует изображение через Mistral Vision API
+    
+    Args:
+        image_path: путь к файлу изображения
+    
+    Returns:
+        Результат анализа с severity, type, action
+    """
+    
+    if not os.path.exists(image_path):
+        logger.error(f"❌ Изображение не найдено: {image_path}")
         return {
-            "suspicion_score": suspicion_score,
-            "recommendation": recommendation,
-            "is_suspicious": is_suspicious,
-            "reason": content,
-            "confidence": confidence,
-            "ai_model": MISTRAL_MODEL,
-            "status": "success"
+            "severity": 0,
+            "confidence": 0,
+            "type": "unknown",
+            "action": "none",
+            "reason": "Файл не найден",
+            "is_violation": False,
+            "status": "error"
+        }
+    
+    if not mistral_client:
+        logger.error("❌ Mistral Vision недоступен")
+        return {
+            "severity": 0,
+            "confidence": 0,
+            "type": "unknown",
+            "action": "none",
+            "reason": "Mistral Vision недоступен",
+            "is_violation": False,
+            "status": "error"
+        }
+    
+    try:
+        # Читаем изображение и кодируем в base64
+        with open(image_path, "rb") as f:
+            image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+        
+        # Определяем тип медиа
+        file_ext = Path(image_path).suffix.lower()
+        media_type_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".tiff": "image/tiff"
+        }
+        media_type = media_type_map.get(file_ext, "image/jpeg")
+        
+        logger.info(f"📸 Анализирую изображение: {image_path} ({media_type})")
+        
+        # Создаем сообщение с изображением
+        system_prompt = """Ты — АНАЛИТИК ВИЗУАЛЬНОГО КОНТЕНТА для модерации Telegram.
+
+ТВОЯ РОЛЬ: Анализировать изображения и определять нарушения.
+
+🚫 ТИПЫ НАРУШЕНИЙ В ИЗОБРАЖЕНИЯХ:
+
+1. ПОРНО (adult_content) — сексуальный, порнографический контент
+2. НАСИЛИЕ (violence) — кровь, избиения, убийства, пытки
+3. ЭКСТРЕМИЗМ (extremism) — символы нацизма, пропаганда
+4. НЕНАВИСТЬ (hate) — оскорбительные символы, знаки
+5. ЖЕСТОКОСТЬ (cruelty) — издевательство над животными
+6. ОРУЖИЕ (weapons) — демонстрация оружия, взрывчатки
+7. НАРКОТИКИ (drugs) — демонстрация наркотиков
+8. МОШЕННИЧЕСТВО (fraud) — поддельные документы, QR коды
+9. БЕЗ НАРУШЕНИЙ (none) — нормальное изображение
+
+🔢 SEVERITY ШКАЛА:
+
+0-2: БЕЗ НАРУШЕНИЙ
+├─ Нормальные фото, природа, люди без нарушений
+
+3-4: СЛАБОЕ НАРУШЕНИЕ
+├─ Слегка оскорбительные изображения
+
+5-6: СРЕДНЕЕ НАРУШЕНИЕ
+├─ Явные нарушения, но не экстремальные
+
+7-8: СЕРЬЁЗНОЕ НАРУШЕНИЕ
+├─ Сильный контент (насилие, порно, экстремизм)
+
+9-10: КРИТИЧНОЕ НАРУШЕНИЕ
+├─ Экстремальный контент
+
+ВЫДАЙ JSON:
+{
+  "analysis": "подробное описание что видишь",
+  "type": "основной тип нарушения (одно из: adult_content, violence, extremism, hate, cruelty, weapons, drugs, fraud, none)",
+  "severity": число_0_до_10,
+  "confidence": число_0_до_100,
+  "action": "none/warn/mute/ban",
+  "explanation": "почему это нарушение",
+  "is_violation": true_или_false,
+  "visual_details": "то что видишь на фото"
+}"""
+        
+        user_prompt = "Проанализируй это изображение на предмет нарушений правил модерации"
+        
+        # Используем Vision API
+        if MISTRAL_IMPORT_VERSION.startswith("v1.0"):
+            messages = [
+                SystemMessage(content=system_prompt),
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{image_data}"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": user_prompt
+                        }
+                    ]
+                }
+            ]
+            
+            response = mistral_client.chat.complete(
+                model="mistral-vision-latest",
+                messages=messages,
+                temperature=0.3,
+                max_tokens=500
+            )
+        else:
+            # Legacy API
+            return {
+                "severity": 5,
+                "confidence": 30,
+                "type": "unknown",
+                "action": "warn",
+                "reason": "Vision API недоступна в legacy версии",
+                "is_violation": False,
+                "status": "unsupported"
+            }
+        
+        content = response.choices[0].message.content
+        logger.info(f"✅ Mistral Vision ответил: {content[:100]}")
+        
+        # Парсим JSON
+        try:
+            import json as json_module
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
+            
+            if json_start != -1 and json_end > json_start:
+                json_str = content[json_start:json_end]
+                result = json_module.loads(json_str)
+                
+                result = {
+                    "analysis": result.get("analysis", ""),
+                    "type": result.get("type", "unknown"),
+                    "severity": min(10, max(0, int(result.get("severity", 5)))),
+                    "confidence": min(100, max(0, int(result.get("confidence", 50)))),
+                    "action": result.get("action", "warn"),
+                    "explanation": result.get("explanation", ""),
+                    "is_violation": result.get("is_violation", False),
+                    "visual_details": result.get("visual_details", ""),
+                    "status": "success"
+                }
+                
+                return result
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка парсинга Vision API: {e}")
+        
+        # Fallback при ошибке парсинга
+        return {
+            "severity": 5,
+            "confidence": 30,
+            "type": "unknown",
+            "action": "warn",
+            "reason": "Ошибка парсинга Vision API",
+            "is_violation": False,
+            "status": "parse_error"
+        }
+    
+    except Exception as e:
+        logger.error(f"❌ Ошибка анализа изображения: {e}")
+        return {
+            "severity": 0,
+            "confidence": 0,
+            "type": "unknown",
+            "action": "none",
+            "reason": f"Ошибка: {e}",
+            "is_violation": False,
+            "status": "error"
         }
 
-    except Exception as e:
-        logger.error(f"❌ Ошибка анализа Mistral Vision: {e}")
-        return {"is_suspicious": False, "reason": f"Ошибка анализа: {e}", "status": "error"}
+# ============================================================================
+# ОСНОВНАЯ ФУНКЦИЯ АГЕНТА 6
+# ============================================================================
 
-def media_analysis_agent_6(input_data: Dict[str, Any], db_session):
-    """Анализатор медиа контента"""
-    media_type = input_data.get("media_type")
-    file_id = input_data.get("file_id")
-    user_id = input_data.get("user_id")
-    username = input_data.get("username", "unknown")
-    chat_id = input_data.get("chat_id")
-    message_id = input_data.get("message_id")
-    message_link = input_data.get("message_link", "")
-    caption = input_data.get("caption", "")
-
-    logger.info(f"🎬 Анализирую {media_type} от @{username} в чате {chat_id}")
-
+async def process_media(media_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Обрабатывает медиафайл (фото, видео)
+    """
+    
     try:
-        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
-        if not chat:
-            chat = Chat(tg_chat_id=str(chat_id), title=f"Chat {chat_id}")
-            db_session.add(chat)
-            db_session.commit()
+        media_path = media_data.get("media_path", "")
+        media_type = media_data.get("media_type", "photo").lower()  # photo, video
         
-        media_dir = Path(MEDIA_DIR)
-        media_dir.mkdir(parents=True, exist_ok=True)
-        file_name = f"{file_id}_{media_type}"
-        file_ext = ".jpg" if media_type == "photo" else ".mp4"  # пример расширения
-        file_path = media_dir / (file_name + file_ext)
-
-        # Скачиваем файл
-        if not file_path.exists():
-            success = download_telegram_file(file_id, file_path)
-            if not success:
-                raise RuntimeError(f"Не удалось скачать файл {file_id}")
-
-        analysis = analyze_media_with_mistral(str(file_path), media_type, caption)
-
-        media_obj = MediaFile(
-            chat_id=chat.id,
-            user_id=user_id,
-            username=username,
-            media_type=media_type,
-            file_id=file_id,
-            file_unique_id=input_data.get("file_unique_id"),
-            file_name=input_data.get("file_name"),
-            file_size=input_data.get("file_size"),
-            mime_type=input_data.get("mime_type"),
-            local_path=str(file_path),
-            message_id=message_id,
-            message_link=message_link,
-            caption=caption,
-            analysis_result=json.dumps(analysis, ensure_ascii=False),
-            is_suspicious=analysis.get("is_suspicious", False),
-            suspension_reason=analysis.get("reason", ""),
-            agent_id=6,
-            analyzed_at=datetime.utcnow()
-        )
-        db_session.add(media_obj)
-        db_session.commit()
-
-        logger.info(f"✅ {media_type.upper()} сохранён в БД, ID: {media_obj.id}")
-
+        user_id = media_data.get("user_id", 0)
+        username = media_data.get("username", "unknown")
+        chat_id = media_data.get("chat_id", 0)
+        message_id = media_data.get("message_id", 0)
+        
+        logger.info(f"🎬 Получено медиа от @{username}: {media_type}")
+        
+        # Проверяем существование файла
+        if not os.path.exists(media_path):
+            logger.error(f"❌ Файл не найден: {media_path}")
+            return {
+                "agent_id": 6,
+                "status": "error",
+                "error": "Файл не найден",
+                "user_id": user_id,
+                "username": username
+            }
+        
+        # Если это видео - извлекаем кадр
+        image_to_analyze = media_path
+        if media_type == "video":
+            frame_path = extract_first_frame_from_video(media_path)
+            if frame_path is None:
+                return {
+                    "agent_id": 6,
+                    "status": "error",
+                    "error": "Не удалось извлечь кадр из видео",
+                    "user_id": user_id,
+                    "username": username
+                }
+            image_to_analyze = frame_path
+        
+        # Анализируем изображение
+        analysis_result = analyze_image_with_mistral(image_to_analyze)
+        
+        # Очищаем временные файлы
+        if media_type == "video" and image_to_analyze != media_path:
+            try:
+                os.remove(image_to_analyze)
+                logger.info(f"🗑️ Удалён временный файл: {image_to_analyze}")
+            except:
+                pass
+        
+        # Формируем выход
         output = {
             "agent_id": 6,
-            "action": "analyzed",
             "media_type": media_type,
-            "file_id": file_id,
+            "media_path": media_path,
             "user_id": user_id,
             "username": username,
             "chat_id": chat_id,
             "message_id": message_id,
-            "message_link": message_link,
-            "media_id": media_obj.id,
-            "is_suspicious": analysis.get("is_suspicious", False),
-            "suspicion_score": analysis.get("suspicion_score", 0),
-            "recommendation": analysis.get("recommendation", "ALLOW"),
-            "analysis": analysis,
-            "status": "success",
-            "timestamp": datetime.now().isoformat(),
+            "analysis": analysis_result["analysis"],
+            "type": analysis_result["type"],
+            "severity": analysis_result["severity"],
+            "confidence": analysis_result["confidence"],
+            "action": analysis_result["action"],
+            "explanation": analysis_result["explanation"],
+            "is_violation": analysis_result["is_violation"],
+            "visual_details": analysis_result.get("visual_details", ""),
+            "status": analysis_result.get("status", "success"),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        if analysis_result["is_violation"]:
+            logger.warning(
+                f"⚠️ НАРУШЕНИЕ В МЕДИА: тип={analysis_result['type']}, "
+                f"severity={analysis_result['severity']}/10, "
+                f"action={analysis_result['action']}"
+            )
+        else:
+            logger.info(f"✅ Медиа в порядке (severity={analysis_result['severity']})")
+        
+        return output
+    
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки медиа: {e}")
+        return {
+            "agent_id": 6,
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
         }
 
-        if analysis.get("is_suspicious"):
-            logger.warning(f"⚠️ ПОДОЗРИТЕЛЬНЫЙ {media_type}: @{username} в чате {chat_id}")
-
-        return output
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки {media_type}: {e}")
-        return {"agent_id": 6, "action": "error", "reason": str(e), "status": "error"}
+# ============================================================================
+# REDIS WORKER
+# ============================================================================
 
 class Agent6Worker:
     def __init__(self):
@@ -244,83 +454,65 @@ class Agent6Worker:
             self.redis_client.ping()
             logger.info("✅ Подключение к Redis успешно")
         except Exception as e:
-            logger.error(f"❌ Ошибка подключения к Redis: {e}")
+            logger.error(f"❌ Не удалось подключиться к Redis: {e}")
             raise
-
-    def process_message(self, message_data, db_session):
-        try:
-            input_data = json.loads(message_data)
-            result = media_analysis_agent_6(input_data, db_session)
-            return result
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Ошибка парсинга JSON: {e}")
-            return {"agent_id": 6, "action": "error", "reason": f"JSON error: {e}", "status": "json_error"}
-        except Exception as e:
-            logger.error(f"❌ Ошибка обработки: {e}")
-            return {"agent_id": 6, "action": "error", "reason": str(e), "status": "error"}
-
+    
     def run(self):
-        logger.info("✅ Агент 6 запущен (Медиа анализатор с Mistral Vision)")
-        logger.info(" Слушаю очередь: queue:agent6:input")
-        db_session = None
+        """Главный цикл обработки медиа"""
+        logger.info("✅ Агент 6 запущен (Анализ медиа)")
+        logger.info(f"📸 Формат: фото (PNG, JPG, GIF, WebP)")
+        logger.info(f"🎬 Видео: MP4, MKV, WebM (через ffmpeg)")
+        logger.info(f"🔔 Слушаю очередь: {QUEUE_AGENT_6_INPUT}")
+        logger.info(" Нажмите Ctrl+C для остановки\n")
+        
         try:
             while True:
                 try:
-                    result = self.redis_client.blpop("queue:agent6:input", timeout=1)
+                    result = self.redis_client.blpop(QUEUE_AGENT_6_INPUT, timeout=1)
                     if result is None:
                         continue
+                    
                     queue_name, message_data = result
-                    logger.info("📨 Получено медиа")
-                    db_session = SessionLocal()
-                    output = self.process_message(message_data, db_session)
-                    db_session.close()
+                    logger.info("📨 Получено новое медиа")
+                    
+                    # Парсим JSON
+                    try:
+                        input_data = json.loads(message_data)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"❌ Невалидный JSON: {e}")
+                        continue
+                    
+                    # Обрабатываем асинхронно
+                    output = asyncio.run(process_media(input_data))
+                    
+                    # Отправляем результат в Агента 5
+                    try:
+                        result_json = json.dumps(output, ensure_ascii=False)
+                        self.redis_client.rpush(QUEUE_AGENT_5_INPUT, result_json)
+                        logger.info("📤 Результаты отправлены Агенту 5")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка отправки результата: {e}")
+                    
                     logger.info("✅ Обработка завершена\n")
+                
                 except Exception as e:
                     logger.error(f"❌ Ошибка в цикле: {e}")
-                    if db_session:
-                        db_session.close()
                     time.sleep(1)
+        
         except KeyboardInterrupt:
             logger.info("\n❌ Агент 6 остановлен (Ctrl+C)")
         finally:
-            if db_session:
-                db_session.close()
+            logger.info("Агент 6 завершил работу")
 
-# Запуск FastAPI сервера идёт по необходимости (пример)
-app = FastAPI(
-    title="🎬 Агент №6 - Анализатор медиа (Mistral Vision)",
-    description="Анализ фото, видео, гифок и документов",
-    version="1.0"
-)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-@app.get("/health")
-async def health_check():
-    db_session = SessionLocal()
-    try:
-        total_media = db_session.query(MediaFile).count()
-        suspicious_media = db_session.query(MediaFile).filter_by(is_suspicious=True).count()
-    finally:
-        db_session.close()
-    return {
-        "status": "online",
-        "agent_id": 6,
-        "name": "Агент №6 (Медиа анализатор)",
-        "version": "1.0 (Mistral Vision)",
-        "ai_provider": f"Mistral AI Vision ({MISTRAL_MODEL})" if mistral_client else "недоступен",
-        "total_media_analyzed": total_media,
-        "suspicious_media_found": suspicious_media,
-        "redis_queue": "queue:agent6:input",
-        "timestamp": datetime.now().isoformat(),
-    }
-
-def run_fastapi():
-    uvicorn.run(app, host="localhost", port=AGENT_PORTS.get(6, 8006), log_level="info")
+# ============================================================================
+# ТОЧКА ВХОДА
+# ============================================================================
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "api":
-        run_fastapi()
-    else:
+    try:
         worker = Agent6Worker()
         worker.run()
+    except KeyboardInterrupt:
+        logger.info("Выход")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}")
