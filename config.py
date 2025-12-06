@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ⚙️ КОНФИГУРАЦИЯ TELEGUARD BOT И АГЕНТОВ
-Исправленная версия с .env поддержкой для Mistral API
+Исправленная версия с get_db_connection_string()
 """
 
 import logging
@@ -14,15 +14,12 @@ from dotenv import load_dotenv
 # ЗАГРУЗКА .ENV (ПОСТОЯННОЕ ХРАНИЛИЩЕ КЛЮЧЕЙ)
 # ============================================================================
 
-# Загружаем .env файл если существует
 ENV_FILE = Path(__file__).resolve().parent / ".env"
 if ENV_FILE.exists():
     load_dotenv(ENV_FILE)
 else:
-    # Создаем .env автоматически при первом запуске
     with open(ENV_FILE, "w") as f:
         f.write("# TeleGuard Bot Configuration\n")
-        f.write("# Скопируй свой Mistral API ключ сюда:\n")
         f.write("MISTRAL_API_KEY=ygeDdoQrYFW5iM8aVw2p18pPZ1se30ow\n")
 
 # ============================================================================
@@ -31,6 +28,7 @@ else:
 
 TELEGRAM_BOT_TOKEN = "8320009669:AAHadwhYKIg6qcwAwJabsBEOO7srfWwMiXE"
 TELEGRAM_API_URL = "https://api.telegram.org"
+TELEGRAM_API_BASE = "https://api.telegram.org"  # ← ДОБАВЛЕНО!
 
 # ============================================================================
 # DATABASE - PostgreSQL
@@ -42,6 +40,10 @@ DB_HOST = "localhost"
 DB_PORT = 5432
 DB_NAME = "teleguard"
 POSTGRES_URL = "postgresql+psycopg2://tg_user:mnvm71@localhost:5432/teleguard?sslmode=disable"
+
+def get_db_connection_string():
+    """Возвращает строку подключения к БД"""
+    return POSTGRES_URL
 
 # ============================================================================
 # REDIS
@@ -85,27 +87,23 @@ QUEUE_AGENT_6_INPUT = "queue:agent6:input"
 QUEUE_AGENT_6_OUTPUT = "queue:agent6:output"
 
 # ============================================================================
-# MISTRAL AI (С ПОСТОЯННЫМ ХРАНИЛИЩЕМ)
+# MISTRAL AI
 # ============================================================================
 
-# ✅ ЧИТАЕМ ИЗ .env (постоянно сохраняется)
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "ygeDdoQrYFW5iM8aVw2p18pPZ1se30ow")
-
 MISTRAL_MODEL = "mistral-large-latest"
 
 MISTRAL_GENERATION_PARAMS = {
-    "temperature": 0.3,   # ✅ УВЕЛИЧЕНО: было 0.1 → менее консервативна
-    "max_tokens": 600,    # ✅ УВЕЛИЧЕНО: было 300 → больше места для анализа
-    "top_p": 0.95         # ✅ ОПТИМИЗИРОВАНО: было 0.9
+    "temperature": 0.3,
+    "max_tokens": 600,
+    "top_p": 0.95
 }
 
 # ============================================================================
 # МОДЕРАТОРЫ
 # ============================================================================
 
-MODERATOR_IDS = [
-    1621052774,  # Твой ID
-]
+MODERATOR_IDS = [1621052774]
 
 # ============================================================================
 # ПРАВИЛА ЧАТА (ПО УМОЛЧАНИЮ)
@@ -146,26 +144,40 @@ def setup_logging(name):
     logger = logging.getLogger(name)
     logger.setLevel(LOG_LEVEL)
     
-    handler = logging.StreamHandler()
-    handler.setLevel(LOG_LEVEL)
+    # Логирование в файл
+    logs_dir = Path(__file__).resolve().parent / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    
+    log_file = logs_dir / f"{name.lower().replace(' ', '_')}.log"
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setLevel(LOG_LEVEL)
+    
+    # Логирование в консоль
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(LOG_LEVEL)
+    
     formatter = logging.Formatter(LOG_FORMAT)
-    handler.setFormatter(formatter)
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
     
     if not logger.handlers:
-        logger.addHandler(handler)
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
     
     return logger
 
 # ============================================================================
-# ПУТИ
+# ПУТИ И ДИРЕКТОРИИ
 # ============================================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-LOGS_DIR = BASE_DIR / "logs"
-DATA_DIR = BASE_DIR / "data"
+LOGS_DIR = str(BASE_DIR / "logs")
+DATA_DIR = str(BASE_DIR / "data")
+DOWNLOADS_DIR = str(BASE_DIR / "downloads")
 
-LOGS_DIR.mkdir(exist_ok=True)
-DATA_DIR.mkdir(exist_ok=True)
+Path(LOGS_DIR).mkdir(exist_ok=True)
+Path(DATA_DIR).mkdir(exist_ok=True)
+Path(DOWNLOADS_DIR).mkdir(exist_ok=True)
 
 # ============================================================================
 # ДРУГИЕ НАСТРОЙКИ
@@ -182,29 +194,29 @@ RETRY_DELAY = 2
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("⚙️ КОНФИГУРАЦИЯ TELEGUARD BOT v3.1")
+    print("⚙️ КОНФИГУРАЦИЯ TELEGUARD BOT v3.2")
     print("=" * 70)
     print(f"✅ Telegram Token: {'***' + TELEGRAM_BOT_TOKEN[-10:]}")
+    print(f"✅ Telegram API: {TELEGRAM_API_BASE}")
     print(f"✅ PostgreSQL: {DB_HOST}:{DB_PORT}/{DB_NAME}")
     print(f"✅ Redis: {REDIS_HOST}:{REDIS_PORT}")
-    print(f"✅ Mistral API Key: {'✅ Установлен' if MISTRAL_API_KEY != 'your_mistral_key_here' else '❌ НЕ установлен'}")
+    print(f"✅ Mistral API Key: {'✅ Установлен' if MISTRAL_API_KEY else '❌ НЕ установлен'}")
     print(f"✅ Mistral Model: {MISTRAL_MODEL}")
-    print(f"✅ Temperature: {MISTRAL_GENERATION_PARAMS['temperature']}")
+    print(f"✅ Температура: {MISTRAL_GENERATION_PARAMS['temperature']}")
     print(f"✅ Max Tokens: {MISTRAL_GENERATION_PARAMS['max_tokens']}")
-    print(f"✅ Модераторы: {len(MODERATOR_IDS)} человек")
-    print(f"✅ Правила: {len(DEFAULT_RULES)} правил")
-    print(f"✅ Агенты: {len(AGENT_PORTS)} агентов")
-    print(f"✅ .env файл: {ENV_FILE}")
+    print(f"✅ Модераторы: {len(MODERATOR_IDS)}")
+    print(f"✅ Агенты: {len(AGENT_PORTS)}")
+    print(f"✅ Logs: {LOGS_DIR}")
+    print(f"✅ Downloads: {DOWNLOADS_DIR}")
     print("=" * 70)
+    print("✅ КОНФИГ ГОТОВ!")
 
 # ============================================================================
 # ОПРЕДЕЛЕНИЕ ДЕЙСТВИЯ МОДЕРАЦИИ
 # ============================================================================
 
 def determine_action(violation_type: str, severity: int, confidence: float) -> dict:
-    """
-    Определяет действие модерации по типу нарушения, серьезности и уверенности
-    """
+    """Определяет действие модерации по типу нарушения"""
     actions = {
         "мат": {
             "low": {"action": "warn", "duration": 0, "severity": "low"},
