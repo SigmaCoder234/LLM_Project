@@ -3,8 +3,7 @@
 
 """
 🤖 TELEGUARD BOT - ИНТЕРФЕЙС ВЕРСИЯ
-✅ Кнопки + Инлайн кнопки + Статус
-✅ ИСПРАВЛЕНО: Столбец БД tg_chat_id (не chat_id)
+✅ ИСПРАВЛЕНО: Правильная схема БД из PostgreSQL
 """
 
 import json
@@ -19,7 +18,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # ============================================================================
@@ -48,7 +47,7 @@ bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
 # ============================================================================
-# БД (ИСПРАВЛЕНО: tg_chat_id, tg_user_id)
+# БД (РЕАЛЬНАЯ СХЕМА ИЗ PostgreSQL)
 # ============================================================================
 
 engine = create_engine(get_db_connection_string())
@@ -56,17 +55,22 @@ Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
 class Chat(Base):
+    """Таблица chats - реальная схема"""
     __tablename__ = "chats"
     id = Column(Integer, primary_key=True)
-    tg_chat_id = Column(String, unique=True)  # ← ИСПРАВЛЕНО!
-    tg_owner_id = Column(String)               # ← ИСПРАВЛЕНО!
-    created_at = Column(DateTime, default=datetime.now)
+    tg_chat_id = Column(String, unique=True, nullable=False)
+    title = Column(String)
+    chat_type = Column(String)
+    added_at = Column(DateTime, default=datetime.now)
+    is_active = Column(Boolean, default=True)
+    custom_rules = Column(String)
 
 class Moderator(Base):
+    """Таблица moderators"""
     __tablename__ = "moderators"
     id = Column(Integer, primary_key=True)
-    tg_chat_id = Column(String)               # ← ИСПРАВЛЕНО!
-    tg_user_id = Column(String)               # ← ИСПРАВЛЕНО!
+    chat_id = Column(Integer)  # FK to chats.id
+    moderator_id = Column(String)
     added_at = Column(DateTime, default=datetime.now)
 
 Base.metadata.create_all(engine)
@@ -120,12 +124,24 @@ def get_status_inline():
 # ПОМОЩНИКИ
 # ============================================================================
 
-def get_moderators(chat_id):
-    """Получить модераторов чата"""
+def get_chat_by_tg_id(tg_chat_id):
+    """Получить чат по tg_chat_id"""
     session = Session()
     try:
-        mods = session.query(Moderator).filter_by(tg_chat_id=str(chat_id)).all()
-        return [m.tg_user_id for m in mods]
+        chat = session.query(Chat).filter_by(tg_chat_id=str(tg_chat_id)).first()
+        return chat
+    finally:
+        session.close()
+
+def get_moderators(tg_chat_id):
+    """Получить модераторов чата по tg_chat_id"""
+    session = Session()
+    try:
+        chat = session.query(Chat).filter_by(tg_chat_id=str(tg_chat_id)).first()
+        if not chat:
+            return []
+        mods = session.query(Moderator).filter_by(chat_id=chat.id).all()
+        return [m.moderator_id for m in mods]
     finally:
         session.close()
 
@@ -235,14 +251,22 @@ async def register_chat_id(msg: Message, state: FSMContext):
     
     session = Session()
     try:
-        if session.query(Chat).filter_by(tg_chat_id=chat_id).first():
+        existing_chat = session.query(Chat).filter_by(tg_chat_id=chat_id).first()
+        if existing_chat:
             await msg.answer(f"✅ Чат {chat_id} уже зарегистрирован!", reply_markup=get_main_keyboard())
             await state.clear()
             return
         
-        session.add(Chat(tg_chat_id=chat_id, tg_owner_id=str(msg.from_user.id)))
-        session.add(Moderator(tg_chat_id=chat_id, tg_user_id=str(msg.from_user.id)))
+        # Добавляем чат
+        new_chat = Chat(tg_chat_id=chat_id, is_active=True)
+        session.add(new_chat)
+        session.flush()  # Получаем ID
+        
+        # Добавляем модератора
+        moderator = Moderator(chat_id=new_chat.id, moderator_id=str(msg.from_user.id))
+        session.add(moderator)
         session.commit()
+        
         logger.info(f"✅ Чат {chat_id} зарегистрирован")
         await msg.answer(f"✅ Чат {chat_id} успешно зарегистрирован!\nТы - модератор.", reply_markup=get_main_keyboard())
     except Exception as e:
@@ -269,13 +293,13 @@ async def add_mod_start(msg: Message, state: FSMContext):
 @dp.message(RegisterState.waiting_chat_id, F.text != "❌ Отмена")
 async def handle_chat_id(msg: Message, state: FSMContext):
     """Обработка ID чата"""
-    chat_id = msg.text
-    mods = get_moderators(chat_id)
+    tg_chat_id = msg.text
+    mods = get_moderators(tg_chat_id)
     
     if not mods:
-        await msg.answer(f"❌ Чат {chat_id} не найден", reply_markup=get_main_keyboard())
+        await msg.answer(f"❌ Чат {tg_chat_id} не найден", reply_markup=get_main_keyboard())
     else:
-        text = f"👥 *Модераторы чата {chat_id}:*\n\n"
+        text = f"👥 *Модераторы чата {tg_chat_id}:*\n\n"
         for i, mod_id in enumerate(mods, 1):
             text += f"{i}. `{mod_id}`\n"
         await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
