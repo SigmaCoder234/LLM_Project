@@ -288,8 +288,10 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
         if hasattr(message_obj, 'content'):
             content = message_obj.content
             if not isinstance(content, str):
+                # Если content не строка - конвертируем
                 content = str(content)
         else:
+            # Если это уже строка
             content = str(message_obj)
 
         
