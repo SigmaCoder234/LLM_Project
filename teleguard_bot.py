@@ -7,6 +7,7 @@
 ✅ Система модераторов (по чатам)
 ✅ Анализ текста, фото, видео, документов
 ✅ Mistral AI интеграция
+✅ ИСПРАВЛЕНО: Уведомления только для модераторов конкретного чата
 """
 
 import logging
@@ -33,7 +34,6 @@ POSTGRES_URL = "postgresql+psycopg2://tg_user:mnvm71@localhost:5432/teleguard?ss
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
 REDIS_DB = 0
-MODERATOR_IDS = [1621052774]
 
 # ============================================================================
 # ЛОГИРОВАНИЕ
@@ -53,7 +53,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # ============================================================================
-# МОДЕЛИ БД (ОБНОВЛЕНО С is_owner)
+# МОДЕЛИ БД
 # ============================================================================
 
 Base = declarative_base()
@@ -92,12 +92,11 @@ class Moderator(Base):
     chat_id = Column(Integer, ForeignKey('chats.id'), nullable=True)
     tg_user_id = Column(BigInteger, nullable=False)
     username = Column(String, nullable=True)
-    is_owner = Column(Boolean, default=False)  # ✅ Владелец чата
+    is_owner = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     added_at = Column(DateTime, default=datetime.utcnow)
     chat = relationship("Chat", back_populates="moderators")
     
-    # ✅ УНИКАЛЬНОСТЬ: один модератор на чат
     __table_args__ = (
         UniqueConstraint('chat_id', 'tg_user_id', name='unique_mod_per_chat'),
     )
@@ -166,104 +165,6 @@ def is_group_chat(chat_type: str) -> bool:
     """✅ Проверка что это групповой чат"""
     return chat_type in ['group', 'supergroup', 'channel']
 
-def should_process_chat(message: types.Message) -> bool:
-    """✅ Проверка нужно ли обрабатывать этот чат"""
-    # ✅ ГРУППЫ + ЛС для команд
-    return is_group_chat(message.chat.type) or (message.chat.type == 'private' and message.text and message.text.startswith('/'))
-
-# ============================================================================
-# СИСТЕМА МОДЕРАТОРОВ ПО ЧАТАМ
-# ============================================================================
-
-async def register_chat(user_id: int, username: str, chat_id: int, db_session):
-    """✅ РЕГИСТРАЦИЯ ЧАТА И ВЛАДЕЛЬЦА"""
-    try:
-        # 1. Проверяем есть ли чат
-        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
-        
-        if not chat:
-            # Создаем новый чат
-            chat = Chat(
-                tg_chat_id=str(chat_id),
-                title=f"Chat {chat_id}",
-                chat_type='group',
-                is_active=True
-            )
-            db_session.add(chat)
-            db_session.flush()
-            logger.info(f"✅ Новый чат зарегистрирован: {chat_id}")
-        
-        # 2. Проверяем есть ли модератор
-        moderator = db_session.query(Moderator).filter_by(
-            chat_id=chat.id,
-            tg_user_id=user_id
-        ).first()
-        
-        if not moderator:
-            # Добавляем первого модератора как владельца
-            moderator = Moderator(
-                chat_id=chat.id,
-                tg_user_id=user_id,
-                username=username,
-                is_owner=True,  # ✅ Владелец
-                is_active=True
-            )
-            db_session.add(moderator)
-            db_session.commit()
-            logger.info(f"✅ Модератор {user_id} добавлен как ВЛАДЕЛЕЦ чата {chat_id}")
-            return True, f"✅ Чат {chat_id} успешно зарегистрирован!\n🔑 Ты владелец чата."
-        else:
-            return False, f"⚠️ Чат {chat_id} уже зарегистрирован!"
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка регистрации чата: {e}")
-        db_session.rollback()
-        return False, f"❌ Ошибка: {e}"
-
-async def add_moderator(owner_user_id: int, new_mod_id: int, chat_id_str: str, db_session):
-    """✅ ДОБАВИТЬ МОДЕРАТОРА К ЧАТУ (ТОЛЬКО ВЛАДЕЛЬЦУ)"""
-    try:
-        # 1. Ищем чат
-        chat = db_session.query(Chat).filter_by(tg_chat_id=chat_id_str).first()
-        if not chat:
-            return False, "❌ Чат не зарегистрирован"
-        
-        # 2. Проверяем что владелец
-        owner = db_session.query(Moderator).filter_by(
-            chat_id=chat.id,
-            tg_user_id=owner_user_id,
-            is_owner=True
-        ).first()
-        
-        if not owner:
-            return False, "❌ Ты не владелец этого чата"
-        
-        # 3. Добавляем нового модератора
-        existing = db_session.query(Moderator).filter_by(
-            chat_id=chat.id,
-            tg_user_id=new_mod_id
-        ).first()
-        
-        if existing:
-            return False, "⚠️ Этот пользователь уже модератор"
-        
-        new_moderator = Moderator(
-            chat_id=chat.id,
-            tg_user_id=new_mod_id,
-            is_owner=False,
-            is_active=True
-        )
-        db_session.add(new_moderator)
-        db_session.commit()
-        
-        logger.info(f"✅ Модератор {new_mod_id} добавлен к чату {chat_id_str}")
-        return True, f"✅ Модератор {new_mod_id} добавлен!"
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка добавления модератора: {e}")
-        db_session.rollback()
-        return False, f"❌ Ошибка: {e}"
-
 def get_chat_moderators(chat_id_str: str, db_session):
     """✅ ПОЛУЧИТЬ МОДЕРАТОРОВ КОНКРЕТНОГО ЧАТА"""
     try:
@@ -282,38 +183,49 @@ def get_chat_moderators(chat_id_str: str, db_session):
         return []
 
 # ============================================================================
-# 🚨 УВЕДОМЛЕНИЕ МОДЕРАТОРАМ
+# 🚨 УВЕДОМЛЕНИЕ МОДЕРАТОРАМ (ИСПРАВЛЕНО!)
 # ============================================================================
 
-async def notify_moderators(session, message_text, message_link, user_id, username, verdict, reason, chat_id_str=None):
+async def notify_moderators(session, message_text, message_link, user_id, username, verdict, reason, severity=0, chat_id_str=None):
     """🚨 ОТПРАВКА УВЕДОМЛЕНИЯ МОДЕРАТОРАМ КОНКРЕТНОГО ЧАТА"""
     try:
-        # ✅ ШАГ 1: Если чат указан - берем ТОЛЬКО его модераторов
+        # ✅ КРИТИЧНО: Если чат указан - берем ТОЛЬКО его модераторов
         if chat_id_str:
             moderators = get_chat_moderators(chat_id_str, session)
             logger.info(f"📡 Чат {chat_id_str}: найдено {len(moderators)} модератор(ов)")
         else:
-            # РЕЗЕРВ: все активные модераторы (без привязки к чату)
-            moderators = session.query(Moderator).filter(Moderator.is_active == True).all()
-            logger.info(f"📡 Все модераторы: {len(moderators)} активных")
+            logger.warning(f"⚠️ chat_id_str не передан! Уведомление НЕ отправляется")
+            return False
         
         if not moderators:
-            logger.warning(f"⚠️ Модераторов не найдено!")
+            logger.warning(f"⚠️ Модераторов для чата {chat_id_str} не найдено!")
             return False
         
         # ✅ ШАГ 2: Формируем уведомление
-        action = "🚨 БАН" if verdict else "✅ ОК"
+        action = "🚨 НАРУШЕНИЕ" if verdict else "✅ ОК"
         msg_preview = message_text[:100] if len(message_text) > 100 else message_text
         reason_text = f"{reason[:150]}" if reason else ""
         
-        notification = (
-            f"{action}\n\n"
-            f"👤 @{username}\n"
-            f"🆔 ID: {user_id}\n"
-            f"💬 Сообщение: {msg_preview}\n"
-            f"📝 Причина: {reason_text}\n"
-            f"🔗 Ссылка: {message_link}"
-        )
+        if severity > 0:
+            severity_bar = "🔴" * min(int(severity / 10), 10)
+            notification = (
+                f"{action}\n"
+                f"{severity_bar} ({severity}/10)\n\n"
+                f"👤 @{username}\n"
+                f"🆔 ID: {user_id}\n"
+                f"💬 Сообщение: {msg_preview}\n"
+                f"📝 Причина: {reason_text}\n"
+                f"🔗 Ссылка: {message_link}"
+            )
+        else:
+            notification = (
+                f"{action}\n\n"
+                f"👤 @{username}\n"
+                f"🆔 ID: {user_id}\n"
+                f"💬 Сообщение: {msg_preview}\n"
+                f"📝 Причина: {reason_text}\n"
+                f"🔗 Ссылка: {message_link}"
+            )
         
         # ✅ ШАГ 3: Отправляем ТОЛЬКО нужным модераторам
         sent_count = 0
@@ -324,7 +236,7 @@ async def notify_moderators(session, message_text, message_link, user_id, userna
                     text=notification,
                     parse_mode="HTML"
                 )
-                logger.info(f"✅ Уведомление отправлено @{moderator.username or moderator.tg_user_id}")
+                logger.info(f"✅ Уведомление отправлено модератору {moderator.tg_user_id}")
                 sent_count += 1
             except Exception as e:
                 logger.error(f"❌ Не удалось отправить модератору {moderator.tg_user_id}: {e}")
@@ -431,12 +343,164 @@ async def send_to_media_agent(media_data: dict):
             return False
         
         media_json = json.dumps(media_data, ensure_ascii=False)
-        redis_client.rpush("queue:agent6:input", media_json)  # ✅ АГЕНТ 6!
+        redis_client.rpush("queue:agent6:input", media_json)
         logger.info(f"📤 МЕДИА отправлено АГЕНТУ 6: {media_data.get('media_type')} от @{media_data.get('username')}")
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка отправки медиа агенту 6: {e}")
         return False
+
+# ============================================================================
+# 📡 ЧИТАЕМ РЕЗУЛЬТАТЫ ОТ АГЕНТОВ (НОВОЕ!)
+# ============================================================================
+
+async def read_agent_results():
+    """🔄 СЛУШАЕМ РЕЗУЛЬТАТЫ ОТ АГЕНТОВ 2 И 6"""
+    while True:
+        try:
+            if not redis_client:
+                await asyncio.sleep(1)
+                continue
+            
+            # ✅ ЧИТАЕМ РЕЗУЛЬТАТЫ ОТ АГЕНТА 2 (ТЕКСТ)
+            try:
+                result_text = redis_client.lpop("queue:agent2:output")
+                if result_text:
+                    data = json.loads(result_text)
+                    logger.info(f"📥 РЕЗУЛЬТАТ ОТ АГЕНТА 2: {data}")
+                    
+                    # Отправляем модераторам ЭТОГО чата
+                    db_session = get_db_session()
+                    await notify_moderators(
+                        session=db_session,
+                        message_text=data.get('message_text', ''),
+                        message_link=data.get('message_link', ''),
+                        user_id=data.get('user_id', 0),
+                        username=data.get('username', 'unknown'),
+                        verdict=data.get('verdict', False),
+                        reason=data.get('reason', ''),
+                        severity=data.get('severity', 0),
+                        chat_id_str=str(data.get('chat_id', ''))  # ✅ КРИТИЧНО!
+                    )
+                    db_session.close()
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки результата агента 2: {e}")
+            
+            # ✅ ЧИТАЕМ РЕЗУЛЬТАТЫ ОТ АГЕНТА 6 (МЕДИА)
+            try:
+                result_media = redis_client.lpop("queue:agent6:output")
+                if result_media:
+                    data = json.loads(result_media)
+                    logger.info(f"📥 РЕЗУЛЬТАТ ОТ АГЕНТА 6: {data}")
+                    
+                    # Отправляем модераторам ЭТОГО чата
+                    db_session = get_db_session()
+                    await notify_moderators(
+                        session=db_session,
+                        message_text=f"📸 {data.get('media_type', 'media').upper()}: {data.get('caption', '')}",
+                        message_link=data.get('message_link', ''),
+                        user_id=data.get('user_id', 0),
+                        username=data.get('username', 'unknown'),
+                        verdict=data.get('verdict', False),
+                        reason=data.get('reason', ''),
+                        severity=data.get('severity', 0),
+                        chat_id_str=str(data.get('chat_id', ''))  # ✅ КРИТИЧНО!
+                    )
+                    db_session.close()
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки результата агента 6: {e}")
+            
+            await asyncio.sleep(0.5)  # Не перегружаем CPU
+            
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка в read_agent_results: {e}")
+            await asyncio.sleep(1)
+
+# ============================================================================
+# СИСТЕМА МОДЕРАТОРОВ ПО ЧАТАМ
+# ============================================================================
+
+async def register_chat(user_id: int, username: str, chat_id: int, db_session):
+    """✅ РЕГИСТРАЦИЯ ЧАТА И ВЛАДЕЛЬЦА"""
+    try:
+        chat = db_session.query(Chat).filter_by(tg_chat_id=str(chat_id)).first()
+        
+        if not chat:
+            chat = Chat(
+                tg_chat_id=str(chat_id),
+                title=f"Chat {chat_id}",
+                chat_type='group',
+                is_active=True
+            )
+            db_session.add(chat)
+            db_session.flush()
+            logger.info(f"✅ Новый чат зарегистрирован: {chat_id}")
+        
+        moderator = db_session.query(Moderator).filter_by(
+            chat_id=chat.id,
+            tg_user_id=user_id
+        ).first()
+        
+        if not moderator:
+            moderator = Moderator(
+                chat_id=chat.id,
+                tg_user_id=user_id,
+                username=username,
+                is_owner=True,
+                is_active=True
+            )
+            db_session.add(moderator)
+            db_session.commit()
+            logger.info(f"✅ Модератор {user_id} добавлен как ВЛАДЕЛЕЦ чата {chat_id}")
+            return True, f"✅ Чат {chat_id} успешно зарегистрирован!\n🔑 Ты владелец чата."
+        else:
+            return False, f"⚠️ Чат {chat_id} уже зарегистрирован!"
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка регистрации чата: {e}")
+        db_session.rollback()
+        return False, f"❌ Ошибка: {e}"
+
+async def add_moderator(owner_user_id: int, new_mod_id: int, chat_id_str: str, db_session):
+    """✅ ДОБАВИТЬ МОДЕРАТОРА К ЧАТУ (ТОЛЬКО ВЛАДЕЛЬЦУ)"""
+    try:
+        chat = db_session.query(Chat).filter_by(tg_chat_id=chat_id_str).first()
+        if not chat:
+            return False, "❌ Чат не зарегистрирован"
+        
+        owner = db_session.query(Moderator).filter_by(
+            chat_id=chat.id,
+            tg_user_id=owner_user_id,
+            is_owner=True
+        ).first()
+        
+        if not owner:
+            return False, "❌ Ты не владелец этого чата"
+        
+        existing = db_session.query(Moderator).filter_by(
+            chat_id=chat.id,
+            tg_user_id=new_mod_id
+        ).first()
+        
+        if existing:
+            return False, "⚠️ Этот пользователь уже модератор"
+        
+        new_moderator = Moderator(
+            chat_id=chat.id,
+            tg_user_id=new_mod_id,
+            is_owner=False,
+            is_active=True
+        )
+        db_session.add(new_moderator)
+        db_session.commit()
+        
+        logger.info(f"✅ Модератор {new_mod_id} добавлен к чату {chat_id_str}")
+        return True, f"✅ Модератор {new_mod_id} добавлен!"
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка добавления модератора: {e}")
+        db_session.rollback()
+        return False, f"❌ Ошибка: {e}"
 
 # ============================================================================
 # КОМАНДЫ (ПЕРВЫЕ! ВЫСШИЙ ПРИОРИТЕТ)
@@ -446,7 +510,6 @@ async def send_to_media_agent(media_data: dict):
 async def register_command(message: types.Message):
     """Регистрация чата: /register CHAT_ID"""
     try:
-        # ✅ ТОЛЬКО В ЛС!
         if message.chat.type != 'private':
             await message.answer("❌ Команда работает только в ЛС!")
             return
@@ -473,7 +536,6 @@ async def register_command(message: types.Message):
         )
         
         db_session.close()
-        
         await message.answer(message_text, parse_mode="HTML")
             
     except Exception as e:
@@ -484,7 +546,6 @@ async def register_command(message: types.Message):
 async def addmod_command(message: types.Message):
     """Добавить модератора: /addmod CHAT_ID MOD_ID"""
     try:
-        # ✅ ТОЛЬКО В ЛС!
         if message.chat.type != 'private':
             await message.answer("❌ Команда работает только в ЛС!")
             return
@@ -569,55 +630,19 @@ async def start_command(message: types.Message):
         f"<b>Тип:</b> {message.chat.type}\n\n"
         f"✅ <b>Активны 6 агентов:</b>\n"
         f"• 1-5: Текстовая модерация\n"
-        f"• <b>6: 🖼️📹 Медиа анализ</b>\n"
-        f"• Mistral AI Vision"
+        f"• <b>6: 🖼️📹 Медиа анализ</b>"
     )
     
     await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
 
-@dp.callback_query(lambda c: c.data == "status_agents")
-async def show_agents_status(callback_query: types.CallbackQuery):
-    """Статус всех агентов"""
-    await callback_query.answer()
-    
-    status_text = "<b>🤖 СТАТУС 6 АГЕНТОВ</b>\n\n"
-    status_text += "🟢 <b>АГЕНТ 1</b> - Порт: 8001\n"
-    status_text += "🟢 <b>АГЕНТ 2</b> - Порт: 8002\n"
-    status_text += "🟢 <b>АГЕНТ 3</b> - Порт: 8003\n"
-    status_text += "🟢 <b>АГЕНТ 4</b> - Порт: 8004\n"
-    status_text += "🟢 <b>АГЕНТ 5</b> - Порт: 8005\n"
-    status_text += "🟢 <b>АГЕНТ 6 (МЕДИА)</b> - Порт: 8006\n\n"
-    status_text += "🟢 <b>Redis:</b> Подключен\n"
-    status_text += "🟢 <b>PostgreSQL:</b> Подключена\n"
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="status_agents")],
-        [InlineKeyboardButton(text="🔙 Меню", callback_data="back_to_menu")]
-    ])
-    
-    await callback_query.message.edit_text(status_text, reply_markup=keyboard, parse_mode="HTML")
-
-@dp.callback_query(lambda c: c.data == "back_to_menu")
-async def back_to_menu(callback_query: types.CallbackQuery):
-    """Главное меню"""
-    await callback_query.answer()
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статус агентов", callback_data="status_agents")],
-        [InlineKeyboardButton(text="📨 Сообщения", callback_data="chat_messages")],
-        [InlineKeyboardButton(text="⚠️ Нарушения", callback_data="negative_messages")],
-        [InlineKeyboardButton(text="🖼️ Медиа файлы", callback_data="media_files")],
-    ])
-    await callback_query.message.edit_text("<b>🤖 TeleGuard Bot v3.0</b>\n\nВыбери опцию:", reply_markup=keyboard, parse_mode="HTML")
-
 # ============================================================================
-# ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ (АГЕНТЫ 1-5)
+# ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ
 # ============================================================================
 
 @dp.message(F.text)
 async def handle_text_message(message: types.Message):
     """Обработчик текстовых сообщений → АГЕНТЫ 1-5"""
     try:
-        # ✅ ГРУППЫ: обычные сообщения
         if is_group_chat(message.chat.type):
             message_data = {
                 "message": message.text,
@@ -628,15 +653,13 @@ async def handle_text_message(message: types.Message):
                 "message_link": f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.message_id}"
             }
 
-            # ✅ 1. СОХРАНЯЕМ В БД
             db_session = get_db_session()
             save_message_to_db(message_data, db_session)
             
-            # ✅ 2. ОТПРАВЛЯЕМ АГЕНТУ 2 (распределитель)
             if redis_client and not message.text.startswith('/'):
                 await send_to_agent2(message_data)
 
-            # ✅ 3. ПРОСТАЯ ПРОВЕРКА НА МАТ (резерв)
+            # ✅ ПРОСТАЯ ПРОВЕРКА НА МАТ (резерв)
             bad_words = ['хуй', 'пизда', 'блядь', 'хер', 'ебать', 'дерьмо', 'шлюха']
             message_lower = message.text.lower()
             
@@ -650,7 +673,8 @@ async def handle_text_message(message: types.Message):
                     username=message_data['username'],
                     verdict=True,
                     reason="🤬 Нецензурная лексика (простой фильтр)",
-                    chat_id_str=str(message.chat.id)  # ✅ ПЕРЕДАЕМ ID ЧАТА!
+                    severity=70,
+                    chat_id_str=str(message.chat.id)  # ✅ ВАЖНО!
                 )
 
             db_session.close()
@@ -668,30 +692,22 @@ async def handle_photo_message(message: types.Message):
     """✅ ФОТО → АГЕНТ 6 (Mistral Vision)"""
     try:
         if not is_group_chat(message.chat.type):
-            logger.info(f"Пропущено фото из чата {message.chat.type}")
             return
         
-        photo = message.photo[-1]  # Берем самое большое разрешение
+        photo = message.photo[-1]
         
         logger.info(f"📸 ФОТО получено: {photo.file_id}")
-        logger.info(f"   Размер: {photo.file_size / 1024 / 1024:.2f} MB")
         
-        # ✅ 1. СКАЧИВАЕМ ФОТО
         try:
             file_info = await bot.get_file(photo.file_id)
             download_path = f"downloads/{photo.file_unique_id}.jpg"
-            
-            # Создаем папку если не существует
             os.makedirs("downloads", exist_ok=True)
-            
             await bot.download_file(file_info.file_path, download_path)
             logger.info(f"✅ Фото скачано: {download_path}")
-            
         except Exception as e:
             logger.error(f"⚠️ Не удалось скачать фото: {e}")
             download_path = None
         
-        # ✅ 2. ПОДГОТАВЛИВАЕМ ДАННЫЕ ДЛЯ АГЕНТА 6
         media_data = {
             "media_type": "photo",
             "file_id": photo.file_id,
@@ -704,28 +720,18 @@ async def handle_photo_message(message: types.Message):
             "caption": message.caption or "",
             "file_size": photo.file_size,
             "mime_type": "image/jpeg",
-            "local_path": download_path  # ✅ ПУТЬ К ЛОКАЛЬНОМУ ФАЙЛУ
+            "local_path": download_path
         }
         
-        # ✅ 3. СОХРАНЯЕМ В БД
         db_session = get_db_session()
-        if save_media_to_db(media_data, db_session):
-            logger.info(f"✅ Фото сохранено в БД")
-        else:
-            logger.error(f"❌ Не удалось сохранить фото в БД")
-        
-        # ✅ 4. ОТПРАВЛЯЕМ АГЕНТУ 6
-        if await send_to_media_agent(media_data):
-            logger.info(f"📸 ✅ ФОТО → АГЕНТ 6: @{media_data['username']}")
-        else:
-            logger.error(f"❌ Не удалось отправить фото агенту 6")
-        
+        save_media_to_db(media_data, db_session)
+        await send_to_media_agent(media_data)
         db_session.close()
+        
+        logger.info(f"📸 ✅ ФОТО → АГЕНТ 6: @{media_data['username']}")
         
     except Exception as e:
         logger.error(f"❌ Ошибка обработки фото: {e}")
-        import traceback
-        traceback.print_exc()
 
 # ============================================================================
 # ОБРАБОТЧИК ВИДЕО (АГЕНТ 6)
@@ -733,7 +739,7 @@ async def handle_photo_message(message: types.Message):
 
 @dp.message(F.video)
 async def handle_video_message(message: types.Message):
-    """✅ ВИДЕО → АГЕНТ 6 (Mistral Vision)"""
+    """✅ ВИДЕО → АГЕНТ 6"""
     try:
         if not is_group_chat(message.chat.type):
             return
@@ -774,11 +780,14 @@ async def main():
     logger.info("🚀 TeleGuard Bot v3.0 - СИСТЕМА МОДЕРАТОРОВ ПО ЧАТАМ!")
     logger.info("✅ Текст → Агенты 1-5")
     logger.info("✅ 🖼️📹 → АГЕНТ 6 (Mistral Vision)")
-    logger.info("✅ МОДЕРАТОРЫ → По чатам (не все подряд)")
+    logger.info("✅ МОДЕРАТОРЫ → По чатам (ИСПРАВЛЕНО!)")
     logger.info("=" * 80)
     logger.info(f"✅ Redis: {'✅' if redis_client else '❌'}")
     logger.info(f"✅ PostgreSQL: ✅")
     logger.info("=" * 80)
+    
+    # ✅ ЗАПУСКАЕМ ЗАДАЧУ ЧТЕНИЯ РЕЗУЛЬТАТОВ ОТ АГЕНТОВ
+    asyncio.create_task(read_agent_results())
     
     try:
         await dp.start_polling(bot)
