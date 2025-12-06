@@ -328,9 +328,10 @@ def get_chat_moderators(chat_id_str: str, db_session):
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================================
 
-def is_group_chat(chat_type: str) -> bool:
-    """Проверка что это групповой чат"""
-    return chat_type in ['group', 'supergroup', 'channel']
+def should_process_chat(message: types.Message) -> bool:
+    """Проверка нужно ли обрабатывать этот чат"""
+    # ✅ ГРУППЫ + ЛС для команд
+    return message.chat.type in ['group', 'supergroup', 'channel'] or message.text.startswith('/')
 
 def should_process_chat(message: types.Message) -> bool:
     """Проверка нужно ли обрабатывать этот чат"""
@@ -473,9 +474,19 @@ def get_all_agents_status() -> dict:
 async def handle_text_message(message: types.Message):
     """Обработчик текстовых сообщений → АГЕНТЫ 1-5"""
     try:
+        # ✅ ИЗМЕНИЛ: обрабатываем ЛС команды!
+        if message.chat.type == 'private' and not message.text.startswith('/'):
+            logger.info(f"Пропущен текст из ЛС (не команда)")
+            return
+            
+        if message.chat.type in ['group', 'supergroup', 'channel'] and message.text.startswith('/'):
+            logger.info(f"Пропущена команда в группе: {message.text[:20]}")
+            return
+            
         if not should_process_chat(message):
             logger.info(f"Пропущен текст из чата {message.chat.type}")
             return
+
 
         # Подготавливаем данные для агентов
         message_data = {
