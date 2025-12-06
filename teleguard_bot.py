@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-🤖 TeleGuard Bot v2.9 - ПОЛНАЯ ВЕРСИЯ С АГЕНТОМ 6
+🤖 TeleGuard Bot v3.0 - ПОЛНАЯ ВЕРСИЯ С МОДЕРАТОРАМИ ПО ЧАТАМ
 ✅ Модерирование групповых чатов Telegram с 6 ИИ агентами
-✅ Анализ текста, фото, видео, документов ✅ РАБОТАЕТ!
+✅ Система модераторов (по чатам)
+✅ Анализ текста, фото, видео, документов
 ✅ Mistral AI интеграция
-✅ notify_moderators() ВЫЗЫВАЕТСЯ при обнаружении нарушений
 """
 
 import logging
@@ -15,12 +15,13 @@ import json
 import time
 import redis
 import requests
+import os
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy import Column, Integer, String, ForeignKey, BigInteger, Boolean, DateTime, create_engine, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, BigInteger, Boolean, DateTime, create_engine, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 # ============================================================================
@@ -52,7 +53,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # ============================================================================
-# МОДЕЛИ БД (СОВМЕСТИМЫ С АГЕНТОМ 6)
+# МОДЕЛИ БД (ОБНОВЛЕНО С is_owner)
 # ============================================================================
 
 Base = declarative_base()
@@ -88,7 +89,7 @@ class Message(Base):
 class Moderator(Base):
     __tablename__ = 'moderators'
     id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=True)  # ✅ Привязка к чату!
+    chat_id = Column(Integer, ForeignKey('chats.id'), nullable=True)
     tg_user_id = Column(BigInteger, nullable=False)
     username = Column(String, nullable=True)
     is_owner = Column(Boolean, default=False)  # ✅ Владелец чата
@@ -98,7 +99,7 @@ class Moderator(Base):
     
     # ✅ УНИКАЛЬНОСТЬ: один модератор на чат
     __table_args__ = (
-        __import__('sqlalchemy').UniqueConstraint('chat_id', 'tg_user_id', name='unique_mod_per_chat'),
+        UniqueConstraint('chat_id', 'tg_user_id', name='unique_mod_per_chat'),
     )
 
 class NegativeMessage(Base):
@@ -158,63 +159,20 @@ except Exception as e:
     redis_client = None
 
 # ============================================================================
-# 🚨 УВЕДОМЛЕНИЕ МОДЕРАТОРАМ
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================================
 
-async def notify_moderators(session, message_text, message_link, user_id, username, verdict, reason, chat_id_str=None):
-    """🚨 ОТПРАВКА УВЕДОМЛЕНИЯ МОДЕРАТОРАМ КОНКРЕТНОГО ЧАТА"""
-    try:
-        # ✅ ШАГ 1: Если чат указан - берем ТОЛЬКО его модераторов
-        if chat_id_str:
-            moderators = get_chat_moderators(chat_id_str, session)
-            logger.info(f"📡 Чат {chat_id_str}: найдено {len(moderators)} модератор(ов)")
-        else:
-            # РЕЗЕРВ: все активные модераторы (без привязки к чату)
-            moderators = session.query(Moderator).filter(Moderator.is_active == True).all()
-            logger.info(f"📡 Все модераторы: {len(moderators)} активных")
-        
-        if not moderators:
-            logger.warning(f"⚠️ Модераторов не найдено!")
-            return False
-        
-        # ✅ ШАГ 2: Формируем уведомление
-        action = "🚨 БАН" if verdict else "✅ ОК"
-        msg_preview = message_text[:100] if len(message_text) > 100 else message_text
-        reason_text = f"{reason[:150]}" if reason else ""
-        
-        notification = (
-            f"{action}\n\n"
-            f"👤 @{username}\n"
-            f"🆔 ID: {user_id}\n"
-            f"💬 Сообщение: {msg_preview}\n"
-            f"📝 Причина: {reason_text}\n"
-            f"🔗 Ссылка: {message_link}"
-        )
-        
-        # ✅ ШАГ 3: Отправляем ТОЛЬКО нужным модераторам
-        sent_count = 0
-        for moderator in moderators:
-            try:
-                await bot.send_message(
-                    chat_id=moderator.tg_user_id,
-                    text=notification,
-                    parse_mode="HTML"
-                )
-                logger.info(f"✅ Уведомление отправлено @{moderator.username or moderator.tg_user_id}")
-                sent_count += 1
-            except Exception as e:
-                logger.error(f"❌ Не удалось отправить модератору {moderator.tg_user_id}: {e}")
-        
-        logger.info(f"📊 Уведомлений отправлено: {sent_count}/{len(moderators)}")
-        return sent_count > 0
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка notify_moderators: {e}")
-        return False
+def is_group_chat(chat_type: str) -> bool:
+    """✅ Проверка что это групповой чат"""
+    return chat_type in ['group', 'supergroup', 'channel']
 
+def should_process_chat(message: types.Message) -> bool:
+    """✅ Проверка нужно ли обрабатывать этот чат"""
+    # ✅ ГРУППЫ + ЛС для команд
+    return is_group_chat(message.chat.type) or (message.chat.type == 'private' and message.text and message.text.startswith('/'))
 
 # ============================================================================
-# ✅ СИСТЕМА МОДЕРАТОРОВ ПО ЧАТАМ
+# СИСТЕМА МОДЕРАТОРОВ ПО ЧАТАМ
 # ============================================================================
 
 async def register_chat(user_id: int, username: str, chat_id: int, db_session):
@@ -323,49 +281,64 @@ def get_chat_moderators(chat_id_str: str, db_session):
         logger.error(f"❌ Ошибка получения модераторов: {e}")
         return []
 
-
 # ============================================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 🚨 УВЕДОМЛЕНИЕ МОДЕРАТОРАМ
 # ============================================================================
 
-def should_process_chat(message: types.Message) -> bool:
-    """Проверка нужно ли обрабатывать этот чат"""
-    # ✅ ГРУППЫ + ЛС для команд
-    return message.chat.type in ['group', 'supergroup', 'channel'] or message.text.startswith('/')
-
-def should_process_chat(message: types.Message) -> bool:
-    """Проверка нужно ли обрабатывать этот чат"""
-    return is_group_chat(message.chat.type)
-
-async def send_to_agent2(message_data: dict):
-    """Отправка текста агенту 2 через Redis"""
+async def notify_moderators(session, message_text, message_link, user_id, username, verdict, reason, chat_id_str=None):
+    """🚨 ОТПРАВКА УВЕДОМЛЕНИЯ МОДЕРАТОРАМ КОНКРЕТНОГО ЧАТА"""
     try:
-        if not redis_client:
-            logger.error("❌ Redis не доступен")
+        # ✅ ШАГ 1: Если чат указан - берем ТОЛЬКО его модераторов
+        if chat_id_str:
+            moderators = get_chat_moderators(chat_id_str, session)
+            logger.info(f"📡 Чат {chat_id_str}: найдено {len(moderators)} модератор(ов)")
+        else:
+            # РЕЗЕРВ: все активные модераторы (без привязки к чату)
+            moderators = session.query(Moderator).filter(Moderator.is_active == True).all()
+            logger.info(f"📡 Все модераторы: {len(moderators)} активных")
+        
+        if not moderators:
+            logger.warning(f"⚠️ Модераторов не найдено!")
             return False
         
-        message_json = json.dumps(message_data, ensure_ascii=False)
-        redis_client.rpush("queue:agent2:input", message_json)
-        logger.info(f"📤 Текст отправлено агенту 2")
-        return True
+        # ✅ ШАГ 2: Формируем уведомление
+        action = "🚨 БАН" if verdict else "✅ ОК"
+        msg_preview = message_text[:100] if len(message_text) > 100 else message_text
+        reason_text = f"{reason[:150]}" if reason else ""
+        
+        notification = (
+            f"{action}\n\n"
+            f"👤 @{username}\n"
+            f"🆔 ID: {user_id}\n"
+            f"💬 Сообщение: {msg_preview}\n"
+            f"📝 Причина: {reason_text}\n"
+            f"🔗 Ссылка: {message_link}"
+        )
+        
+        # ✅ ШАГ 3: Отправляем ТОЛЬКО нужным модераторам
+        sent_count = 0
+        for moderator in moderators:
+            try:
+                await bot.send_message(
+                    chat_id=moderator.tg_user_id,
+                    text=notification,
+                    parse_mode="HTML"
+                )
+                logger.info(f"✅ Уведомление отправлено @{moderator.username or moderator.tg_user_id}")
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"❌ Не удалось отправить модератору {moderator.tg_user_id}: {e}")
+        
+        logger.info(f"📊 Уведомлений отправлено: {sent_count}/{len(moderators)}")
+        return sent_count > 0
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки агенту 2: {e}")
+        logger.error(f"❌ Ошибка notify_moderators: {e}")
         return False
 
-async def send_to_media_agent(media_data: dict):
-    """✅ ОТПРАВКА МЕДИА АГЕНТУ 6 через Redis"""
-    try:
-        if not redis_client:
-            logger.error("❌ Redis не доступен")
-            return False
-        
-        media_json = json.dumps(media_data, ensure_ascii=False)
-        redis_client.rpush("queue:agent6:input", media_json)  # ✅ АГЕНТ 6!
-        logger.info(f"📤 МЕДИА отправлено АГЕНТУ 6: {media_data.get('media_type')} от @{media_data.get('username')}")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки медиа агенту 6: {e}")
-        return False
+# ============================================================================
+# СОХРАНЕНИЕ В БД
+# ============================================================================
 
 def save_message_to_db(message_data: dict, db_session):
     """Сохранение текстового сообщения в БД"""
@@ -420,6 +393,7 @@ def save_media_to_db(media_data: dict, db_session):
             message_id=media_data['message_id'],
             message_link=media_data['message_link'],
             caption=media_data.get('caption', ''),
+            local_path=media_data.get('local_path'),
             created_at=datetime.utcnow()
         )
         db_session.add(media_obj)
@@ -430,115 +404,99 @@ def save_media_to_db(media_data: dict, db_session):
         logger.error(f"❌ Ошибка сохранения медиа: {e}")
         return False
 
-def check_agent_health(agent_id: int, port: int) -> dict:
-    """Health check агента"""
-    health_check_url = f"http://localhost:{port}/health"
-    try:
-        response = requests.get(health_check_url, timeout=5)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"status": "error", "message": f"HTTP {response.status_code}"}
-    except Exception as e:
-        return {"status": "offline", "message": str(e)}
+# ============================================================================
+# ОТПРАВКА АГЕНТАМ
+# ============================================================================
 
-def get_all_agents_status() -> dict:
-    """Получить статус всех 6 агентов"""
-    agents = {
-        1: {"name": "Агент 1", "port": 8001},
-        2: {"name": "Агент 2", "port": 8002},
-        3: {"name": "Агент 3 (Mistral)", "port": 8003},
-        4: {"name": "Агент 4 (Эвристика)", "port": 8004},
-        5: {"name": "Агент 5 (Арбитр)", "port": 8005},
-        6: {"name": "АГЕНТ 6 (МЕДИА ✅)", "port": 8006}
-    }
-    
-    status = {}
-    for agent_id, info in agents.items():
-        health = check_agent_health(agent_id, info["port"])
-        status[agent_id] = {
-            "name": info["name"],
-            "port": info["port"],
-            "status": health.get("status", "unknown"),
-            "message": health.get("message", ""),
-            "uptime": health.get("uptime_seconds", 0) if health.get("status") == "online" else 0
-        }
-    
-    return status
+async def send_to_agent2(message_data: dict):
+    """Отправка текста агенту 2 через Redis"""
+    try:
+        if not redis_client:
+            logger.error("❌ Redis не доступен")
+            return False
+        
+        message_json = json.dumps(message_data, ensure_ascii=False)
+        redis_client.rpush("queue:agent2:input", message_json)
+        logger.info(f"📤 Текст отправлено агенту 2")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки агенту 2: {e}")
+        return False
+
+async def send_to_media_agent(media_data: dict):
+    """✅ ОТПРАВКА МЕДИА АГЕНТУ 6 через Redis"""
+    try:
+        if not redis_client:
+            logger.error("❌ Redis не доступен")
+            return False
+        
+        media_json = json.dumps(media_data, ensure_ascii=False)
+        redis_client.rpush("queue:agent6:input", media_json)  # ✅ АГЕНТ 6!
+        logger.info(f"📤 МЕДИА отправлено АГЕНТУ 6: {media_data.get('media_type')} от @{media_data.get('username')}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки медиа агенту 6: {e}")
+        return False
 
 # ============================================================================
-# ✅ ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ (АГЕНТЫ 1-5)
+# ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ (АГЕНТЫ 1-5)
 # ============================================================================
 
 @dp.message(F.text)
 async def handle_text_message(message: types.Message):
     """Обработчик текстовых сообщений → АГЕНТЫ 1-5"""
     try:
-        # ✅ ИЗМЕНИЛ: обрабатываем ЛС команды!
-        if message.chat.type == 'private' and not message.text.startswith('/'):
-            logger.info(f"Пропущен текст из ЛС (не команда)")
-            return
+        # ✅ ГРУППЫ: обычные сообщения
+        if is_group_chat(message.chat.type):
+            message_data = {
+                "message": message.text,
+                "user_id": message.from_user.id,
+                "username": message.from_user.username or f"user{message.from_user.id}",
+                "chat_id": message.chat.id,
+                "message_id": message.message_id,
+                "message_link": f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.message_id}"
+            }
+
+            # ✅ 1. СОХРАНЯЕМ В БД
+            db_session = get_db_session()
+            save_message_to_db(message_data, db_session)
             
-        if message.chat.type in ['group', 'supergroup', 'channel'] and message.text.startswith('/'):
-            logger.info(f"Пропущена команда в группе: {message.text[:20]}")
-            return
+            # ✅ 2. ОТПРАВЛЯЕМ АГЕНТУ 2 (распределитель)
+            if redis_client and not message.text.startswith('/'):
+                await send_to_agent2(message_data)
+
+            # ✅ 3. ПРОСТАЯ ПРОВЕРКА НА МАТ (резерв)
+            bad_words = ['хуй', 'пизда', 'блядь', 'хер', 'ебать', 'дерьмо', 'шлюха']
+            message_lower = message.text.lower()
             
-        if not should_process_chat(message):
-            logger.info(f"Пропущен текст из чата {message.chat.type}")
-            return
+            if any(word in message_lower for word in bad_words):
+                logger.warning(f"🚨 ПРОСТОЙ ФИЛЬТР: {message.text[:50]}...")
+                await notify_moderators(
+                    session=db_session,
+                    message_text=message.text,
+                    message_link=message_data['message_link'],
+                    user_id=message.from_user.id,
+                    username=message_data['username'],
+                    verdict=True,
+                    reason="🤬 Нецензурная лексика (простой фильтр)",
+                    chat_id_str=str(message.chat.id)  # ✅ ПЕРЕДАЕМ ID ЧАТА!
+                )
 
-
-        # Подготавливаем данные для агентов
-        message_data = {
-            "message": message.text,
-            "user_id": message.from_user.id,
-            "username": message.from_user.username or f"user{message.from_user.id}",
-            "chat_id": message.chat.id,
-            "message_id": message.message_id,
-            "message_link": f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.message_id}"
-        }
-
-        # ✅ 1. СОХРАНЯЕМ В БД
-        db_session = get_db_session()
-        save_message_to_db(message_data, db_session)
-        
-        # ✅ 2. ОТПРАВЛЯЕМ АГЕНТУ 2 (распределитель)
-        if redis_client and not message.text.startswith('/'):
-            await send_to_agent2(message_data)
-
-        # ✅ 3. ПРОСТАЯ ПРОВЕРКА НА МАТ (резерв)
-        bad_words = ['хуй', 'пизда', 'блядь', 'хер', 'ебать', 'дерьмо', 'шлюха']
-        message_lower = message.text.lower()
-        
-        if any(word in message_lower for word in bad_words):
-            logger.warning(f"🚨 ПРОСТОЙ ФИЛЬТР: {message.text[:50]}...")
-            await notify_moderators(
-                session=db_session,
-                message_text=message.text,
-                message_link=message_data['message_link'],
-                user_id=message.from_user.id,
-                username=message_data['username'],
-                verdict=True,
-                reason="🤬 Нецензурная лексика (простой фильтр)",
-                chat_id_str=str(message.chat.id)  # ✅ ПЕРЕДАЕМ ID ЧАТА!
-            )
-
-
-        db_session.close()
-        logger.info(f"✅ Текст → Агенты 1-5: {message.text[:50]}...")
+            db_session.close()
+            logger.info(f"✅ Текст → Агенты 1-5: {message.text[:50]}...")
 
     except Exception as e:
         logger.error(f"❌ Ошибка обработки текста: {e}")
 
 # ============================================================================
-# ✅ ОБРАБОТЧИК ФОТО (АГЕНТ 6)
+# ОБРАБОТЧИК ФОТО (АГЕНТ 6)
 # ============================================================================
 
 @dp.message(F.photo)
 async def handle_photo_message(message: types.Message):
-    """✅ ФОТО → АГЕНТ 6 (Mistral Vision) + ЗАГРУЗКА И СОХРАНЕНИЕ"""
+    """✅ ФОТО → АГЕНТ 6 (Mistral Vision)"""
     try:
-        if not should_process_chat(message):
+        if not is_group_chat(message.chat.type):
             logger.info(f"Пропущено фото из чата {message.chat.type}")
             return
         
@@ -553,7 +511,6 @@ async def handle_photo_message(message: types.Message):
             download_path = f"downloads/{photo.file_unique_id}.jpg"
             
             # Создаем папку если не существует
-            import os
             os.makedirs("downloads", exist_ok=True)
             
             await bot.download_file(file_info.file_path, download_path)
@@ -600,14 +557,14 @@ async def handle_photo_message(message: types.Message):
         traceback.print_exc()
 
 # ============================================================================
-# ✅ ОБРАБОТЧИК ВИДЕО И ДОКУМЕНТОВ (АГЕНТ 6)
+# ОБРАБОТЧИК ВИДЕО (АГЕНТ 6)
 # ============================================================================
 
 @dp.message(F.video)
 async def handle_video_message(message: types.Message):
     """✅ ВИДЕО → АГЕНТ 6 (Mistral Vision)"""
     try:
-        if not should_process_chat(message):
+        if not is_group_chat(message.chat.type):
             return
         
         video = message.video
@@ -635,111 +592,6 @@ async def handle_video_message(message: types.Message):
         
     except Exception as e:
         logger.error(f"❌ Ошибка обработки видео: {e}")
-
-@dp.message(F.document)
-async def handle_document_message(message: types.Message):
-    """✅ ДОКУМЕНТЫ/ГИФКИ → АГЕНТ 6"""
-    try:
-        if not should_process_chat(message):
-            return
-        
-        doc = message.document
-        mime_type = doc.mime_type or "unknown"
-        
-        # Обрабатываем только изображения/видео
-        if "image" in mime_type or "video" in mime_type:
-            media_type = "gif" if "gif" in mime_type else "image" if "image" in mime_type else "video"
-            
-            media_data = {
-                "media_type": media_type,
-                "file_id": doc.file_id,
-                "file_unique_id": doc.file_unique_id,
-                "filename": doc.file_name,
-                "file_size": doc.file_size,
-                "mime_type": mime_type,
-                "user_id": message.from_user.id,
-                "username": message.from_user.username or message.from_user.first_name or "unknown",
-                "chat_id": message.chat.id,
-                "message_id": message.message_id,
-                "message_link": f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.message_id}",
-                "caption": message.caption or ""
-            }
-            
-            db_session = get_db_session()
-            save_media_to_db(media_data, db_session)
-            await send_to_media_agent(media_data)
-            db_session.close()
-            
-            logger.info(f"📎 ✅ {media_type.upper()} → АГЕНТ 6: @{media_data['username']}")
-        else:
-            logger.info(f"⏭️ Документ пропущен: {doc.file_name}")
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки документа: {e}")
-
-# ============================================================================
-# КОМАНДЫ МЕНЮ
-# ============================================================================
-
-@dp.message(Command("start"))
-async def start_command(message: types.Message):
-    """Команда /start"""
-    if not is_group_chat(message.chat.type):
-        await message.answer("<b>🤖 TeleGuard Bot v2.9</b>\n\n✅ Бот готов к работе с 6 агентами!", parse_mode="HTML")
-        return
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статус агентов", callback_data="status_agents")],
-        [InlineKeyboardButton(text="📨 Сообщения", callback_data="chat_messages")],
-        [InlineKeyboardButton(text="⚠️ Нарушения", callback_data="negative_messages")],
-        [InlineKeyboardButton(text="🖼️ Медиа файлы", callback_data="media_files")],
-    ])
-    
-    welcome_text = (
-        f"<b>🤖 TeleGuard Bot v2.9</b>\n\n"
-        f"<b>Чат:</b> de>{message.chat.id}</code>\n"
-        f"<b>Тип:</b> {message.chat.type}\n\n"
-        f"✅ <b>Активны 6 агентов:</b>\n"
-        f"• 1-5: Текстовая модерация\n"
-        f"• <b>6: 🖼️📹 Медиа анализ</b>\n"
-        f"• Mistral AI Vision"
-    )
-    
-    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
-
-@dp.callback_query(lambda c: c.data == "status_agents")
-async def show_agents_status(callback_query: types.CallbackQuery):
-    """Статус всех агентов"""
-    await callback_query.answer()
-    
-    status = get_all_agents_status()
-    status_text = "<b>🤖 СТАТУС 6 АГЕНТОВ</b>\n\n"
-    
-    for agent_id, info in status.items():
-        if info["status"] == "online":
-            emoji = "🟢"
-            uptime = f"{info['uptime']//3600}ч {((info['uptime']%3600)//60)}м"
-        elif info["status"] == "offline":
-            emoji = "🔴"
-            uptime = "Отключен"
-        else:
-            emoji = "⚪"
-            uptime = info.get("message", "Unknown")
-        
-        status_text += f"{emoji} <b>{info['name']}</b>\n"
-        status_text += f"   Порт: de>{info['port']}</code>\n"
-        status_text += f"   {uptime}\n\n"
-    
-    redis_status = "🟢" if redis_client and redis_client.ping() else "🔴"
-    status_text += f"<b>Redis:</b> {redis_status} Подключен\n"
-    status_text += f"<b>PostgreSQL:</b> 🟢 Подключена\n"
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="status_agents")],
-        [InlineKeyboardButton(text="🔙 Меню", callback_data="back_to_menu")]
-    ])
-    
-    await callback_query.message.edit_text(status_text, reply_markup=keyboard, parse_mode="HTML")
 
 # ============================================================================
 # КОМАНДЫ РЕГИСТРАЦИИ И УПРАВЛЕНИЯ МОДЕРАТОРАМИ
@@ -858,6 +710,53 @@ async def listmods_command(message: types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}", parse_mode="HTML")
 
+@dp.message(Command("start"))
+async def start_command(message: types.Message):
+    """Команда /start"""
+    if is_group_chat(message.chat.type):
+        await message.answer("<b>🤖 TeleGuard Bot v3.0</b>\n\n✅ Бот готов к работе с 6 агентами!", parse_mode="HTML")
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статус агентов", callback_data="status_agents")],
+        [InlineKeyboardButton(text="📨 Сообщения", callback_data="chat_messages")],
+        [InlineKeyboardButton(text="⚠️ Нарушения", callback_data="negative_messages")],
+        [InlineKeyboardButton(text="🖼️ Медиа файлы", callback_data="media_files")],
+    ])
+    
+    welcome_text = (
+        f"<b>🤖 TeleGuard Bot v3.0</b>\n\n"
+        f"<b>Чат:</b> {message.chat.id}\n"
+        f"<b>Тип:</b> {message.chat.type}\n\n"
+        f"✅ <b>Активны 6 агентов:</b>\n"
+        f"• 1-5: Текстовая модерация\n"
+        f"• <b>6: 🖼️📹 Медиа анализ</b>\n"
+        f"• Mistral AI Vision"
+    )
+    
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data == "status_agents")
+async def show_agents_status(callback_query: types.CallbackQuery):
+    """Статус всех агентов"""
+    await callback_query.answer()
+    
+    status_text = "<b>🤖 СТАТУС 6 АГЕНТОВ</b>\n\n"
+    status_text += "🟢 <b>АГЕНТ 1</b> - Порт: 8001\n"
+    status_text += "🟢 <b>АГЕНТ 2</b> - Порт: 8002\n"
+    status_text += "🟢 <b>АГЕНТ 3</b> - Порт: 8003\n"
+    status_text += "🟢 <b>АГЕНТ 4</b> - Порт: 8004\n"
+    status_text += "🟢 <b>АГЕНТ 5</b> - Порт: 8005\n"
+    status_text += "🟢 <b>АГЕНТ 6 (МЕДИА)</b> - Порт: 8006\n\n"
+    status_text += "🟢 <b>Redis:</b> Подключен\n"
+    status_text += "🟢 <b>PostgreSQL:</b> Подключена\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="status_agents")],
+        [InlineKeyboardButton(text="🔙 Меню", callback_data="back_to_menu")]
+    ])
+    
+    await callback_query.message.edit_text(status_text, reply_markup=keyboard, parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data == "back_to_menu")
 async def back_to_menu(callback_query: types.CallbackQuery):
@@ -869,7 +768,7 @@ async def back_to_menu(callback_query: types.CallbackQuery):
         [InlineKeyboardButton(text="⚠️ Нарушения", callback_data="negative_messages")],
         [InlineKeyboardButton(text="🖼️ Медиа файлы", callback_data="media_files")],
     ])
-    await callback_query.message.edit_text("<b>🤖 TeleGuard Bot v2.9</b>\n\nВыбери опцию:", reply_markup=keyboard, parse_mode="HTML")
+    await callback_query.message.edit_text("<b>🤖 TeleGuard Bot v3.0</b>\n\nВыбери опцию:", reply_markup=keyboard, parse_mode="HTML")
 
 # ============================================================================
 # ТОЧКА ВХОДА
@@ -878,14 +777,14 @@ async def back_to_menu(callback_query: types.CallbackQuery):
 async def main():
     """🚀 Запуск бота"""
     logger.info("=" * 80)
-    logger.info("🚀 TeleGuard Bot v2.9 - ПОЛНАЯ ИНТЕГРАЦИЯ С 6 АГЕНТАМИ!")
+    logger.info("🚀 TeleGuard Bot v3.0 - СИСТЕМА МОДЕРАТОРОВ ПО ЧАТАМ!")
     logger.info("✅ Текст → Агенты 1-5")
     logger.info("✅ 🖼️📹 → АГЕНТ 6 (Mistral Vision)")
+    logger.info("✅ МОДЕРАТОРЫ → По чатам (не все подряд)")
     logger.info("=" * 80)
     logger.info(f"✅ Redis: {'✅' if redis_client else '❌'}")
     logger.info(f"✅ PostgreSQL: ✅")
     logger.info(f"✅ Модераторы: {len(MODERATOR_IDS)} IDs")
-    logger.info("✅ Запусти: python sixth_agent.py")
     logger.info("=" * 80)
     
     try:
