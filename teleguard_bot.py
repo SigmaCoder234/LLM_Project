@@ -4,7 +4,7 @@
 """
 🤖 TELEGUARD BOT - ИНТЕРФЕЙС ВЕРСИЯ
 ✅ Кнопки + Инлайн кнопки + Статус
-✅ ИСПРАВЛЕНО: работает с существующим config.py
+✅ ИСПРАВЛЕНО: Столбец БД tg_chat_id (не chat_id)
 """
 
 import json
@@ -20,11 +20,10 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 # ============================================================================
-# ИМПОРТ КОНФИГА (без TELEGRAM_API_BASE)
+# ИМПОРТ КОНФИГА
 # ============================================================================
 
 try:
@@ -36,13 +35,11 @@ try:
         QUEUE_AGENT_2_OUTPUT,
         QUEUE_AGENT_6_INPUT, 
         QUEUE_AGENT_6_OUTPUT,
-        setup_logging
+        setup_logging,
+        DOWNLOADS_DIR
     )
-    TELEGRAM_API_BASE = "https://api.telegram.org"  # Добавляем сюда!
-    DOWNLOADS_DIR = "downloads"
 except ImportError as e:
     print(f"❌ ОШИБКА ИМПОРТА: {e}")
-    print("Убедись что config.py существует в этой директории!")
     exit(1)
 
 logger = setup_logging("TELEGUARD BOT")
@@ -51,7 +48,7 @@ bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
 # ============================================================================
-# БД
+# БД (ИСПРАВЛЕНО: tg_chat_id, tg_user_id)
 # ============================================================================
 
 engine = create_engine(get_db_connection_string())
@@ -61,15 +58,15 @@ Base = declarative_base()
 class Chat(Base):
     __tablename__ = "chats"
     id = Column(Integer, primary_key=True)
-    chat_id = Column(String, unique=True)
-    owner_id = Column(String)
+    tg_chat_id = Column(String, unique=True)  # ← ИСПРАВЛЕНО!
+    tg_owner_id = Column(String)               # ← ИСПРАВЛЕНО!
     created_at = Column(DateTime, default=datetime.now)
 
 class Moderator(Base):
     __tablename__ = "moderators"
     id = Column(Integer, primary_key=True)
-    chat_id = Column(String)
-    moderator_id = Column(String)
+    tg_chat_id = Column(String)               # ← ИСПРАВЛЕНО!
+    tg_user_id = Column(String)               # ← ИСПРАВЛЕНО!
     added_at = Column(DateTime, default=datetime.now)
 
 Base.metadata.create_all(engine)
@@ -124,14 +121,18 @@ def get_status_inline():
 # ============================================================================
 
 def get_moderators(chat_id):
+    """Получить модераторов чата"""
     session = Session()
-    mods = session.query(Moderator).filter_by(chat_id=str(chat_id)).all()
-    session.close()
-    return [m.moderator_id for m in mods]
+    try:
+        mods = session.query(Moderator).filter_by(tg_chat_id=str(chat_id)).all()
+        return [m.tg_user_id for m in mods]
+    finally:
+        session.close()
 
 async def download_file(file_id, file_name):
     """Скачать файл с Telegram"""
     try:
+        from config import TELEGRAM_API_BASE
         url = f"{TELEGRAM_API_BASE}/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
@@ -148,7 +149,7 @@ async def download_file(file_id, file_name):
                             logger.info(f"✅ Фото скачано: {local}")
                             return local
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Ошибка скачивания: {e}")
     return None
 
 async def notify_mods(chat_id, result):
@@ -156,6 +157,7 @@ async def notify_mods(chat_id, result):
     try:
         mods = get_moderators(str(chat_id))
         if not mods:
+            logger.info(f"📬 Чат {chat_id}: модераторы не найдены")
             return
         
         logger.info(f"📬 Чат {chat_id}: найдено {len(mods)} модератор(ов)")
@@ -183,11 +185,11 @@ async def notify_mods(chat_id, result):
                 await bot.send_message(int(mod_id), text, parse_mode="Markdown")
                 logger.info(f"✅ Уведомление {mod_id}")
                 sent += 1
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки {mod_id}: {e}")
         logger.info(f"📊 Отправлено: {sent}/{len(mods)}")
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Ошибка уведомления: {e}")
 
 # ============================================================================
 # КОМАНДЫ И КНОПКИ
@@ -232,20 +234,21 @@ async def register_chat_id(msg: Message, state: FSMContext):
         return
     
     session = Session()
-    if session.query(Chat).filter_by(chat_id=chat_id).first():
-        await msg.answer(f"✅ Чат {chat_id} уже зарегистрирован!", reply_markup=get_main_keyboard())
-        session.close()
-        await state.clear()
-        return
-    
     try:
-        session.add(Chat(chat_id=chat_id, owner_id=str(msg.from_user.id)))
-        session.add(Moderator(chat_id=chat_id, moderator_id=str(msg.from_user.id)))
+        if session.query(Chat).filter_by(tg_chat_id=chat_id).first():
+            await msg.answer(f"✅ Чат {chat_id} уже зарегистрирован!", reply_markup=get_main_keyboard())
+            await state.clear()
+            return
+        
+        session.add(Chat(tg_chat_id=chat_id, tg_owner_id=str(msg.from_user.id)))
+        session.add(Moderator(tg_chat_id=chat_id, tg_user_id=str(msg.from_user.id)))
         session.commit()
         logger.info(f"✅ Чат {chat_id} зарегистрирован")
         await msg.answer(f"✅ Чат {chat_id} успешно зарегистрирован!\nТы - модератор.", reply_markup=get_main_keyboard())
     except Exception as e:
+        logger.error(f"❌ Ошибка БД: {e}")
         await msg.answer(f"❌ Ошибка: {e}")
+        session.rollback()
     finally:
         session.close()
     
@@ -267,24 +270,17 @@ async def add_mod_start(msg: Message, state: FSMContext):
 async def handle_chat_id(msg: Message, state: FSMContext):
     """Обработка ID чата"""
     chat_id = msg.text
+    mods = get_moderators(chat_id)
     
-    # Проверяем контекст
-    context = await state.get_data()
-    prev_text = context.get("prev_handler", "")
+    if not mods:
+        await msg.answer(f"❌ Чат {chat_id} не найден", reply_markup=get_main_keyboard())
+    else:
+        text = f"👥 *Модераторы чата {chat_id}:*\n\n"
+        for i, mod_id in enumerate(mods, 1):
+            text += f"{i}. `{mod_id}`\n"
+        await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
     
-    # Список модераторов
-    if "список" in msg.text.lower() or True:  # Для упрощения
-        mods = get_moderators(chat_id)
-        
-        if not mods:
-            await msg.answer(f"❌ Чат {chat_id} не найден", reply_markup=get_main_keyboard())
-        else:
-            text = f"👥 *Модераторы чата {chat_id}:*\n\n"
-            for i, mod_id in enumerate(mods, 1):
-                text += f"{i}. `{mod_id}`\n"
-            await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
-        
-        await state.clear()
+    await state.clear()
 
 @dp.message(F.text == "📊 Статус")
 async def status(msg: Message):
@@ -294,9 +290,11 @@ async def status(msg: Message):
         redis_status = "✅ OK" if redis_ping else "❌ ERROR"
         
         session = Session()
-        chats_count = session.query(Chat).count()
-        mods_count = session.query(Moderator).count()
-        session.close()
+        try:
+            chats_count = session.query(Chat).count()
+            mods_count = session.query(Moderator).count()
+        finally:
+            session.close()
         
         q2_len = redis_client.llen(QUEUE_AGENT_2_INPUT)
         q6_len = redis_client.llen(QUEUE_AGENT_6_INPUT)
@@ -316,6 +314,7 @@ Agent 6: {q6_len} фото
         
         await msg.answer(text, reply_markup=get_status_inline(), parse_mode="Markdown")
     except Exception as e:
+        logger.error(f"❌ Ошибка статуса: {e}")
         await msg.answer(f"❌ Ошибка: {e}", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "ℹ️ Справка")
@@ -341,7 +340,7 @@ async def help_cmd(msg: Message):
 # ОБРАБОТКА СООБЩЕНИЙ И ФОТО
 # ============================================================================
 
-@dp.message(F.text & ~F.text.startswith("/") & ~F.text.startswith("📋") & ~F.text.startswith("👥") & ~F.text.startswith("➕") & ~F.text.startswith("📊") & ~F.text.startswith("ℹ️"))
+@dp.message(F.text & ~F.text.startswith("/"))
 async def handle_text(msg: Message):
     """Обработка текста"""
     try:
@@ -419,6 +418,7 @@ async def photos_list(query):
         
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=get_status_inline())
     except Exception as e:
+        logger.error(f"❌ Ошибка списка: {e}")
         await query.answer(f"❌ {e}")
 
 @dp.callback_query(F.data == "redis_stats")
@@ -434,6 +434,7 @@ async def redis_stats(query):
         
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=get_status_inline())
     except Exception as e:
+        logger.error(f"❌ Ошибка Redis: {e}")
         await query.answer(f"❌ {e}")
 
 # ============================================================================
@@ -452,8 +453,8 @@ async def result_reader():
                 try:
                     j = json.loads(data)
                     await notify_mods(j.get("chat_id"), j)
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"❌ Ошибка обработки результата: {e}")
             
             result = redis_client.blpop(QUEUE_AGENT_6_OUTPUT, timeout=1)
             if result:
@@ -461,8 +462,8 @@ async def result_reader():
                 try:
                     j = json.loads(data)
                     await notify_mods(j.get("chat_id"), j)
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"❌ Ошибка обработки результата: {e}")
             
             await asyncio.sleep(0.1)
         except Exception as e:
