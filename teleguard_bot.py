@@ -211,7 +211,7 @@ async def register_chat(user_id: int, username: str, chat_id: int, db_session):
             db_session.add(moderator)
             db_session.commit()
             logger.info(f"✅ Модератор {user_id} добавлен как ВЛАДЕЛЕЦ чата {chat_id}")
-            return True, f"✅ Чат {chat_id} успешно зарегистрирован!\\n🔑 Ты владелец чата."
+            return True, f"✅ Чат {chat_id} успешно зарегистрирован!\n🔑 Ты владелец чата."
         else:
             return False, f"⚠️ Чат {chat_id} уже зарегистрирован!"
             
@@ -307,11 +307,11 @@ async def notify_moderators(session, message_text, message_link, user_id, userna
         reason_text = f"{reason[:150]}" if reason else ""
         
         notification = (
-            f"{action}\\n\\n"
-            f"👤 @{username}\\n"
-            f"🆔 ID: {user_id}\\n"
-            f"💬 Сообщение: {msg_preview}\\n"
-            f"📝 Причина: {reason_text}\\n"
+            f"{action}\n\n"
+            f"👤 @{username}\n"
+            f"🆔 ID: {user_id}\n"
+            f"💬 Сообщение: {msg_preview}\n"
+            f"📝 Причина: {reason_text}\n"
             f"🔗 Ссылка: {message_link}"
         )
         
@@ -454,9 +454,9 @@ async def register_command(message: types.Message):
         args = message.text.split()
         if len(args) < 2:
             await message.answer(
-                "📝 <b>Использование:</b> /register CHAT_ID\\n\\n"
-                "Пример: /register -1001234567890\\n\\n"
-                "1️⃣ Добавь бота в чат\\n"
+                "📝 <b>Использование:</b> /register CHAT_ID\n\n"
+                "Пример: /register -1001234567890\n\n"
+                "1️⃣ Добавь бота в чат\n"
                 "2️⃣ Напиши эту команду в ЛС",
                 parse_mode="HTML"
             )
@@ -492,7 +492,7 @@ async def addmod_command(message: types.Message):
         args = message.text.split()
         if len(args) < 3:
             await message.answer(
-                "📝 <b>Использование:</b> /addmod CHAT_ID MOD_ID\\n\\n"
+                "📝 <b>Использование:</b> /addmod CHAT_ID MOD_ID\n\n"
                 "Пример: /addmod -1001234567890 987654321",
                 parse_mode="HTML"
             )
@@ -539,10 +539,10 @@ async def listmods_command(message: types.Message):
             await message.answer("❌ Модераторов не найдено", parse_mode="HTML")
             return
         
-        text = f"<b>👥 Модераторы чата {chat_id_str}:</b>\\n\\n"
+        text = f"<b>👥 Модераторы чата {chat_id_str}:</b>\n\n"
         for mod in moderators:
             crown = "👑" if mod.is_owner else "🛡️"
-            text += f"{crown} ID: {mod.tg_user_id} (@{mod.username or 'unknown'})\\n"
+            text += f"{crown} ID: {mod.tg_user_id} (@{mod.username or 'unknown'})\n"
         
         await message.answer(text, parse_mode="HTML")
         
@@ -553,7 +553,7 @@ async def listmods_command(message: types.Message):
 async def start_command(message: types.Message):
     """Команда /start"""
     if is_group_chat(message.chat.type):
-        await message.answer("<b>🤖 TeleGuard Bot v3.0</b>\\n\\n✅ Бот готов к работе с 6 агентами!", parse_mode="HTML")
+        await message.answer("<b>🤖 TeleGuard Bot v3.0</b>\n\n✅ Бот готов к работе с 6 агентами!", parse_mode="HTML")
         return
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -564,12 +564,12 @@ async def start_command(message: types.Message):
     ])
     
     welcome_text = (
-        f"<b>🤖 TeleGuard Bot v3.0</b>\\n\\n"
-        f"<b>Чат:</b> {message.chat.id}\\n"
-        f"<b>Тип:</b> {message.chat.type}\\n\\n"
-        f"✅ <b>Активны 6 агентов:</b>\\n"
-        f"• 1-5: Текстовая модерация\\n"
-        f"• <b>6: 🖼️📹 Медиа анализ</b>\\n"
+        f"<b>🤖 TeleGuard Bot v3.0</b>\n\n"
+        f"<b>Чат:</b> {message.chat.id}\n"
+        f"<b>Тип:</b> {message.chat.type}\n\n"
+        f"✅ <b>Активны 6 агентов:</b>\n"
+        f"• 1-5: Текстовая модерация\n"
+        f"• <b>6: 🖼️📹 Медиа анализ</b>\n"
         f"• Mistral AI Vision"
     )
     
@@ -580,15 +580,15 @@ async def show_agents_status(callback_query: types.CallbackQuery):
     """Статус всех агентов"""
     await callback_query.answer()
     
-    status_text = "<b>🤖 СТАТУС 6 АГЕНТОВ</b>\\n\\n"
-    status_text += "🟢 <b>АГЕНТ 1</b> - Порт: 8001\\n"
-    status_text += "🟢 <b>АГЕНТ 2</b> - Порт: 8002\\n"
-    status_text += "🟢 <b>АГЕНТ 3</b> - Порт: 8003\\n"
-    status_text += "🟢 <b>АГЕНТ 4</b> - Порт: 8004\\n"
-    status_text += "🟢 <b>АГЕНТ 5</b> - Порт: 8005\\n"
-    status_text += "🟢 <b>АГЕНТ 6 (МЕДИА)</b> - Порт: 8006\\n\\n"
-    status_text += "🟢 <b>Redis:</b> Подключен\\n"
-    status_text += "🟢 <b>PostgreSQL:</b> Подключена\\n"
+    status_text = "<b>🤖 СТАТУС 6 АГЕНТОВ</b>\n\n"
+    status_text += "🟢 <b>АГЕНТ 1</b> - Порт: 8001\n"
+    status_text += "🟢 <b>АГЕНТ 2</b> - Порт: 8002\n"
+    status_text += "🟢 <b>АГЕНТ 3</b> - Порт: 8003\n"
+    status_text += "🟢 <b>АГЕНТ 4</b> - Порт: 8004\n"
+    status_text += "🟢 <b>АГЕНТ 5</b> - Порт: 8005\n"
+    status_text += "🟢 <b>АГЕНТ 6 (МЕДИА)</b> - Порт: 8006\n\n"
+    status_text += "🟢 <b>Redis:</b> Подключен\n"
+    status_text += "🟢 <b>PostgreSQL:</b> Подключена\n"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="status_agents")],
@@ -607,7 +607,7 @@ async def back_to_menu(callback_query: types.CallbackQuery):
         [InlineKeyboardButton(text="⚠️ Нарушения", callback_data="negative_messages")],
         [InlineKeyboardButton(text="🖼️ Медиа файлы", callback_data="media_files")],
     ])
-    await callback_query.message.edit_text("<b>🤖 TeleGuard Bot v3.0</b>\\n\\nВыбери опцию:", reply_markup=keyboard, parse_mode="HTML")
+    await callback_query.message.edit_text("<b>🤖 TeleGuard Bot v3.0</b>\n\nВыбери опцию:", reply_markup=keyboard, parse_mode="HTML")
 
 # ============================================================================
 # ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ (АГЕНТЫ 1-5)
@@ -783,37 +783,9 @@ async def main():
     try:
         await dp.start_polling(bot)
     except KeyboardInterrupt:
-        logger.info("\\n❌ Бот остановлен")
+        logger.info("\n❌ Бот остановлен")
     finally:
         await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-## 🚀 Запуск
-
-cd ~/LLM_Project
-python3 teleguard_bot.py &
-tail -f logs/bot.log
-
-## 🧪 Тест команд
-
-**В ЛС:**
-/register -4613107632
-/addmod -4613107632 987654321
-/listmods -4613107632
-
-## ✅ Ключевые исправления
-
-1. **Команды имеют ВЫСШИЙ приоритет** - обработчики @dp.message(Command(...)) находятся ДО @dp.message(F.text)
-2. **Модераторы по чатам** - notify_moderators отправляет ТОЛЬКО модераторам конкретного чата
-3. **Регистрация работает** - /register создает чат и добавляет владельца
-4. **Система фото/видео** - медиа идет напрямую в АГЕНТ 6
-5. **No browser storage** - используются переменные в памяти
-
-## 📋 Команды
-
-- `/register CHAT_ID` - зарегистрировать чат (ты станешь владельцем)
-- `/addmod CHAT_ID MOD_ID` - добавить модератора (только владельцу)
-- `/listmods CHAT_ID` - список модераторов чата
-- `/start` - главное меню (в ЛС)
