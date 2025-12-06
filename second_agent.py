@@ -260,9 +260,10 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
                 UserMessage(content=user_message_text)
             ]
         else:
+            # Создаем сообщения с ChatMessage (для обеих версий)
             messages = [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message_text}
+            ChatMessage(role="system", content=system_message),
+            ChatMessage(role="user", content=user_message_text)
             ]
         
         # Вызываем API
