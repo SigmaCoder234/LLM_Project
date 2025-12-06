@@ -4,10 +4,11 @@
 """
 🤖 TeleGuard Bot v3.0 - ПОЛНАЯ ВЕРСИЯ С МОДЕРАТОРАМИ ПО ЧАТАМ
 ✅ Модерирование групповых чатов Telegram с 6 ИИ агентами
-✅ Система модераторов (по чатам)
+✅ Система модераторов (по чатам) - ИСПРАВЛЕНО!
 ✅ Анализ текста, фото, видео, документов
 ✅ Mistral AI интеграция
 ✅ ИСПРАВЛЕНО: Уведомления только для модераторов конкретного чата
+✅ ИСПРАВЛЕНО: Чтение фото из Redis
 """
 
 import logging
@@ -170,6 +171,7 @@ def get_chat_moderators(chat_id_str: str, db_session):
     try:
         chat = db_session.query(Chat).filter_by(tg_chat_id=chat_id_str).first()
         if not chat:
+            logger.warning(f"⚠️ Чат {chat_id_str} не найден в БД")
             return []
         
         moderators = db_session.query(Moderator).filter_by(
@@ -177,6 +179,7 @@ def get_chat_moderators(chat_id_str: str, db_session):
             is_active=True
         ).all()
         
+        logger.info(f"📍 Найдено модераторов для чата {chat_id_str}: {len(moderators)}")
         return moderators
     except Exception as e:
         logger.error(f"❌ Ошибка получения модераторов: {e}")
@@ -191,8 +194,8 @@ async def notify_moderators(session, message_text, message_link, user_id, userna
     try:
         # ✅ КРИТИЧНО: Если чат указан - берем ТОЛЬКО его модераторов
         if chat_id_str:
-            moderators = get_chat_moderators(chat_id_str, session)
-            logger.info(f"📡 Чат {chat_id_str}: найдено {len(moderators)} модератор(ов)")
+            moderators = get_chat_moderators(str(chat_id_str), session)
+            logger.info(f"🔍 Чат {chat_id_str}: найдено {len(moderators)} модератор(ов)")
         else:
             logger.warning(f"⚠️ chat_id_str не передан! Уведомление НЕ отправляется")
             return False
@@ -236,7 +239,7 @@ async def notify_moderators(session, message_text, message_link, user_id, userna
                     text=notification,
                     parse_mode="HTML"
                 )
-                logger.info(f"✅ Уведомление отправлено модератору {moderator.tg_user_id}")
+                logger.info(f"✅ Уведомление отправлено модератору {moderator.tg_user_id} (@{moderator.username})")
                 sent_count += 1
             except Exception as e:
                 logger.error(f"❌ Не удалось отправить модератору {moderator.tg_user_id}: {e}")
@@ -367,9 +370,9 @@ async def read_agent_results():
                 result_text = redis_client.lpop("queue:agent2:output")
                 if result_text:
                     data = json.loads(result_text)
-                    logger.info(f"📥 РЕЗУЛЬТАТ ОТ АГЕНТА 2: {data}")
+                    logger.info(f"📥 РЕЗУЛЬТАТ ОТ АГЕНТА 2/5: {data.get('action')} от @{data.get('username')}")
                     
-                    # Отправляем модераторам ЭТОГО чата
+                    # ✅ ПЕРЕДАЕМ CHAT_ID В notify_moderators
                     db_session = get_db_session()
                     await notify_moderators(
                         session=db_session,
@@ -377,7 +380,7 @@ async def read_agent_results():
                         message_link=data.get('message_link', ''),
                         user_id=data.get('user_id', 0),
                         username=data.get('username', 'unknown'),
-                        verdict=data.get('verdict', False),
+                        verdict=data.get('action') != 'none',
                         reason=data.get('reason', ''),
                         severity=data.get('severity', 0),
                         chat_id_str=str(data.get('chat_id', ''))  # ✅ КРИТИЧНО!
@@ -391,9 +394,9 @@ async def read_agent_results():
                 result_media = redis_client.lpop("queue:agent6:output")
                 if result_media:
                     data = json.loads(result_media)
-                    logger.info(f"📥 РЕЗУЛЬТАТ ОТ АГЕНТА 6: {data}")
+                    logger.info(f"📥 РЕЗУЛЬТАТ ОТ АГЕНТА 6: {data.get('media_type')} от @{data.get('username')}")
                     
-                    # Отправляем модераторам ЭТОГО чата
+                    # ✅ ПЕРЕДАЕМ CHAT_ID В notify_moderators
                     db_session = get_db_session()
                     await notify_moderators(
                         session=db_session,
