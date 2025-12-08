@@ -3,6 +3,7 @@
 """
 🤖 TELEGUARD BOT - ИНТЕРФЕЙС ВЕРСИЯ
 ✅ ИСПРАВЛЕНО: Правильная схема БД из PostgreSQL (tg_user_id вместо moderator_id)
+✅ УЛУЧШЕНО: Информативные сообщения о нарушениях
 """
 
 import json
@@ -168,7 +169,7 @@ async def download_file(file_id, file_name):
     return None
 
 async def notify_mods(chat_id, result):
-    """Уведомить модераторов"""
+    """Уведомить модераторов - ИНФОРМАТИВНАЯ ВЕРСИЯ"""
     try:
         mods = get_moderators(chat_id)
         if not mods:
@@ -177,25 +178,87 @@ async def notify_mods(chat_id, result):
         
         logger.info(f"📬 Чат {chat_id}: найдено {len(mods)} модератор(ов)")
         
+        # Извлекаем данные из результата
         action = result.get("action", "none")
-        user = result.get("user", result.get("username", "unknown"))
+        username = result.get("user", result.get("username", "unknown"))
         severity = result.get("severity", 0)
-        reason = result.get("reason", "Нарушение")
+        reason = result.get("reason", "Нарушение правил")
         verdict = result.get("verdict", None)
+        message_text = result.get("message", "")
+        message_link = result.get("message_link", "")
+        confidence = result.get("confidence", 0)
+        timestamp = result.get("timestamp", "")
         
+        # Форматируем timestamp
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp)
+                formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                formatted_time = timestamp
+        else:
+            formatted_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Формируем полное сообщение
         if action in ["ban", "mute", "warn"]:
             emoji = {"ban": "🚫", "mute": "🔇", "warn": "⚠️"}[action]
-            text = f"{emoji} *{action.upper()}*\n👤 @{user}\n📝 {reason}\n📊 {severity}/10"
-        elif verdict is not None:
-            if verdict:
-                text = f"🚨 *НАРУШЕНИЕ В ФОТО*\n👤 @{user}\n📝 {reason}\n📊 {severity}/10"
-            else:
-                text = f"✅ Фото от @{user} - нарушений не найдено"
-        else:
-            text = f"✅ @{user} - нарушений не найдено"
+            
+            text = f"""{emoji} *{action.upper()}*
+
+👤 *Пользователь:* @{username}
+💬 *Сообщение:* {message_text if message_text else '(фото/медиа)'}
+⚠️ *Серьезность:* {severity}/10
+📊 *Уверенность:* {confidence}%
+🔨 *Действие:* {action.upper()}
+
+📝 *Причина:*
+{reason}
+
+🔗 *Ссылка:* {message_link if message_link else '(фото)'}
+
+⏰ *Время:* {formatted_time}"""
         
+        elif verdict is not None:
+            # Для фото
+            if verdict:
+                text = f"""🚨 *НАРУШЕНИЕ ОБНАРУЖЕНО*
+
+👤 *Пользователь:* @{username}
+📸 *Контент:* Фото/Изображение
+⚠️ *Серьезность:* {severity}/10
+📊 *Уверенность:* {confidence}%
+🔨 *Действие:* BAN
+
+📝 *Причина:*
+{reason}
+
+🔗 *Ссылка:* {message_link if message_link else '(фото)'}
+
+⏰ *Время:* {formatted_time}"""
+            else:
+                text = f"""✅ *КОНТЕНТ ОК*
+
+👤 *Пользователь:* @{username}
+📸 *Контент:* Фото/Изображение
+📊 *Уверенность:* {confidence}%
+
+Фото от @{username} - нарушений не найдено.
+
+⏰ *Время:* {formatted_time}"""
+        else:
+            text = f"""✅ *СООБЩЕНИЕ ОК*
+
+👤 *Пользователь:* @{username}
+💬 *Сообщение:* {message_text if message_text else '(текст)'}
+📊 *Уверенность:* {confidence}%
+
+@{username} - нарушений не найдено.
+
+⏰ *Время:* {formatted_time}"""
+        
+        # Отправляем всем модераторам
         sent = 0
-        for mod_id, username in mods:
+        for mod_id, mod_username in mods:
             try:
                 await bot.send_message(int(mod_id), text, parse_mode="Markdown")
                 logger.info(f"✅ Уведомление {mod_id}")
@@ -430,7 +493,8 @@ async def handle_text(msg: Message):
             "user_id": msg.from_user.id,
             "chat_id": msg.chat.id,
             "message_id": msg.message_id,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "message_link": f"https://t.me/c/{str(msg.chat.id)[4:]}/{msg.message_id}"
         }
         
         redis_client.rpush(QUEUE_AGENT_2_INPUT, json.dumps(data, ensure_ascii=False))
@@ -459,7 +523,8 @@ async def handle_photo(msg: Message):
             "chat_id": msg.chat.id,
             "message_id": msg.message_id,
             "caption": msg.caption or "",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "message_link": f"https://t.me/c/{str(msg.chat.id)[4:]}/{msg.message_id}"
         }
         
         redis_client.rpush(QUEUE_AGENT_6_INPUT, json.dumps(data, ensure_ascii=False))
