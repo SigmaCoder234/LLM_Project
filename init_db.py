@@ -1,30 +1,64 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-🚀 ИНИЦИАЛИЗАЦИЯ БД - СОЗДАНИЕ ТАБЛИЦ И ДОБАВЛЕНИЕ МОДЕРАТОРОВ
+🚀 ИНИЦИАЛИЗАЦИЯ БД TELEGUARD (БЕЗ psql)
+Работает через SQLAlchemy напрямую
 """
 
-import logging
+import sys
+from pathlib import Path
+
+# Добавляем текущую директорию в path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from config import get_db_connection_string
 from sqlalchemy import create_engine, text
-from config import POSTGRES_URL, MODERATOR_IDS
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+print("=" * 70)
+print("🚀 ИНИЦИАЛИЗАЦИЯ БД TELEGUARD")
+print("=" * 70)
 
-def init_database():
-    """Инициализирует БД: создаёт таблицы и добавляет модераторов"""
+try:
+    # Подключаемся к БД
+    db_url = get_db_connection_string()
+    print(f"📍 Подключение: {db_url.split('@')[1]}")
     
-    try:
-        logger.info("🚀 Инициализация БД...")
+    engine = create_engine(db_url)
+    
+    # Пытаемся подключиться
+    with engine.begin() as conn:
+        print("✅ Подключение успешно!")
         
-        # Подключаемся к БД в одной сессии для всех операций
-        engine = create_engine(POSTGRES_URL)
+        # Удаляем старые таблицы
+        print("\n🗑️ Удаление старых таблиц...")
+        try:
+            conn.execute(text("DROP TABLE IF EXISTS moderators CASCADE;"))
+            conn.execute(text("DROP TABLE IF EXISTS chats CASCADE;"))
+            print("✅ Старые таблицы удалены")
+        except Exception as e:
+            print(f"⚠️ Таблицы не существовали или уже удалены")
         
-        with engine.begin() as connection:
-            # SQL для создания таблиц
-            create_tables_sql = """
+        # Создаём новые таблицы
+        print("\n📝 Создание новых таблиц...")
+        
+        # Таблица chats
+        print("  ├─ chats...", end=" ")
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS chats (
+                id SERIAL PRIMARY KEY,
+                tg_chat_id VARCHAR(100) UNIQUE NOT NULL,
+                title VARCHAR(255),
+                chat_type VARCHAR(50),
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT TRUE,
+                custom_rules TEXT
+            );
+        """))
+        print("✅")
+        
+        # Таблица moderators (ИСПРАВЛЕННАЯ)
+        print("  └─ moderators (ИСПРАВЛЕННАЯ)...", end=" ")
+        conn.execute(text("""
             CREATE TABLE IF NOT EXISTS moderators (
                 id SERIAL PRIMARY KEY,
                 tg_user_id BIGINT UNIQUE NOT NULL,
@@ -34,122 +68,45 @@ def init_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-
-            CREATE TABLE IF NOT EXISTS chats (
-                id SERIAL PRIMARY KEY,
-                tg_chat_id BIGINT UNIQUE NOT NULL,
-                title VARCHAR(255),
-                chat_type VARCHAR(50),
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT TRUE,
-                custom_rules TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                id SERIAL PRIMARY KEY,
-                chat_id INTEGER NOT NULL,
-                message_id BIGINT NOT NULL,
-                sender_username VARCHAR(255),
-                sender_id BIGINT NOT NULL,
-                message_text TEXT,
-                message_link VARCHAR(500),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                processed_at TIMESTAMP,
-                ai_response TEXT,
-                FOREIGN KEY (chat_id) REFERENCES chats(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS violations (
-                id SERIAL PRIMARY KEY,
-                chat_id INTEGER NOT NULL,
-                message_id BIGINT NOT NULL,
-                sender_id BIGINT NOT NULL,
-                violation_type VARCHAR(100),
-                description TEXT,
-                severity VARCHAR(50),
-                action_taken VARCHAR(50),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (chat_id) REFERENCES chats(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS agent_logs (
-                id SERIAL PRIMARY KEY,
-                agent_id INTEGER,
-                event_type VARCHAR(100),
-                message_id BIGINT,
-                details TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS media_files (
-                id SERIAL PRIMARY KEY,
-                chat_id INTEGER NOT NULL,
-                message_id BIGINT NOT NULL,
-                file_type VARCHAR(50),
-                file_id VARCHAR(255),
-                analysis_result TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (chat_id) REFERENCES chats(id)
-            );
-            CREATE TABLE IF NOT EXISTS violations (
-    		id SERIAL PRIMARY KEY,
-  		chat_id INTEGER NOT NULL,
-    		message_id BIGINT NOT NULL,
-    		sender_id BIGINT NOT NULL,
-    		violation_type VARCHAR(100),
-    		description TEXT,
-    		severity VARCHAR(50),
-		action_taken VARCHAR(50),
-    		action_duration INTEGER DEFAULT 0,
-        	action_reason VARCHAR(255), 
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-	        FOREIGN KEY (chat_id) REFERENCES chats(id)
-		);
-            """
-            
-            # Выполняем создание таблиц
-            for statement in create_tables_sql.split(';'):
-                statement = statement.strip()
-                if statement:
-                    connection.execute(text(statement))
-            
-            logger.info("✅ Таблицы созданы успешно!")
-            
-            # ДОБАВЛЯЕМ МОДЕРАТОРОВ В ТОЙ ЖЕ СЕССИИ
-            added_count = 0
-            for moderator_id in MODERATOR_IDS:
-                # Проверяем есть ли уже такой модератор
-                result = connection.execute(
-                    text("SELECT COUNT(*) FROM moderators WHERE tg_user_id = :id"),
-                    {"id": moderator_id}
-                )
-                exists = result.scalar() > 0
-                
-                if not exists:
-                    connection.execute(
-                        text("""
-                            INSERT INTO moderators (tg_user_id, is_active)
-                            VALUES (:id, TRUE)
-                        """),
-                        {"id": moderator_id}
-                    )
-                    added_count += 1
-            
-            # Подсчитываем общее количество
-            result = connection.execute(text("SELECT COUNT(*) FROM moderators"))
-            total_moderators = result.scalar()
-            
-            logger.info(f"✅ ИНИЦИАЛИЗАЦИЯ ЗАВЕРШЕНА УСПЕШНО!")
-            logger.info(f"✅ Добавлено новых модераторов: {added_count}")
-            logger.info(f"✅ Всего модераторов в БД: {total_moderators}")
-            
-    except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}")
-        logger.error(f"❌ Проверь:")
-        logger.error(f"  1. PostgreSQL запущена? (psql -U postgres)")
-        logger.error(f"  2. Правильный пароль в POSTGRES_URL?")
-        logger.error(f"  3. БД 'teleguard' существует?")
-        raise
-
-if __name__ == "__main__":
-    init_database()
+        """))
+        print("✅")
+        
+        # Проверяем структуру таблицы
+        print("\n🔍 Проверка структуры moderators:")
+        result = conn.execute(text("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns 
+            WHERE table_name = 'moderators'
+            ORDER BY ordinal_position;
+        """))
+        
+        for col_name, col_type, nullable in result:
+            nullable_str = "NOT NULL" if nullable == "NO" else "nullable"
+            print(f"  ├─ {col_name:15} {col_type:20} ({nullable_str})")
+        
+        print("\n" + "=" * 70)
+        print("✅ ИНИЦИАЛИЗАЦИЯ ЗАВЕРШЕНА УСПЕШНО!")
+        print("=" * 70)
+        print("\n🎉 БД ГОТОВА К ИСПОЛЬЗОВАНИЮ!")
+        print("\nЧто дальше:")
+        print("  1. Заменить teleguard_bot.py на teleguard_bot_fixed.py:")
+        print("     $ cp teleguard_bot_fixed.py teleguard_bot.py")
+        print("\n  2. Остановить и запустить бота:")
+        print("     $ bash stop_all.sh && sleep 2 && bash start_all.sh")
+        print("\n  3. Протестировать:")
+        print("     - Отправь боту /start")
+        print("     - Нажми '📊 Статус' (должно работать БЕЗ ошибок!)")
+        print("     - Нажми '📋 Регистрация чата' и введи ID")
+        print("\n" + "=" * 70)
+        
+except Exception as e:
+    print(f"\n❌ ОШИБКА: {e}")
+    print("\nПроверь:")
+    print("  1. PostgreSQL запущена?")
+    print("     $ sudo systemctl status postgresql")
+    print("\n  2. Пользователь tg_user создан?")
+    print("     $ psql -U postgres -c \"SELECT usename FROM pg_user;\"")
+    print("\n  3. БД teleguard создана?")
+    print("     $ psql -U tg_user -h localhost -d teleguard -c \"SELECT 1;\"")
+    print("\n  4. Пароль правильный в config.py? (должен быть: mnvm71)")
+    sys.exit(1)
