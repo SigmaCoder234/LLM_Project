@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 🤖 TELEGUARD BOT - ИНТЕРФЕЙС ВЕРСИЯ
-✅ ИСПРАВЛЕНО: Правильная схема БД из PostgreSQL
+✅ ИСПРАВЛЕНО: Правильная схема БД из PostgreSQL (tg_user_id вместо moderator_id)
 """
 
 import json
@@ -12,13 +11,12 @@ import asyncio
 import os
 import aiohttp
 from datetime import datetime
-
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, DateTime, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # ============================================================================
@@ -27,12 +25,12 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 try:
     from config import (
-        TELEGRAM_BOT_TOKEN, 
-        get_redis_config, 
+        TELEGRAM_BOT_TOKEN,
+        get_redis_config,
         get_db_connection_string,
-        QUEUE_AGENT_2_INPUT, 
+        QUEUE_AGENT_2_INPUT,
         QUEUE_AGENT_2_OUTPUT,
-        QUEUE_AGENT_6_INPUT, 
+        QUEUE_AGENT_6_INPUT,
         QUEUE_AGENT_6_OUTPUT,
         setup_logging,
         DOWNLOADS_DIR
@@ -42,12 +40,11 @@ except ImportError as e:
     exit(1)
 
 logger = setup_logging("TELEGUARD BOT")
-
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
 # ============================================================================
-# БД (РЕАЛЬНАЯ СХЕМА ИЗ PostgreSQL)
+# БД (СИНХРОНИЗИРОВАННАЯ СХЕМА С POSTGRES)
 # ============================================================================
 
 engine = create_engine(get_db_connection_string())
@@ -55,7 +52,7 @@ Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
 class Chat(Base):
-    """Таблица chats - реальная схема"""
+    """Таблица chats"""
     __tablename__ = "chats"
     id = Column(Integer, primary_key=True)
     tg_chat_id = Column(String, unique=True, nullable=False)
@@ -66,14 +63,18 @@ class Chat(Base):
     custom_rules = Column(String)
 
 class Moderator(Base):
-    """Таблица moderators"""
+    """Таблица moderators - СИНХРОНИЗИРОВАНА"""
     __tablename__ = "moderators"
     id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer)  # FK to chats.id
-    moderator_id = Column(String)
-    added_at = Column(DateTime, default=datetime.now)
+    tg_user_id = Column(BigInteger, unique=True, nullable=False)  # ИСПРАВЛЕНО: BigInteger + unique
+    username = Column(String)
+    first_name = Column(String)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now)
 
 Base.metadata.create_all(engine)
+
 redis_client = redis.Redis(**get_redis_config())
 
 # ============================================================================
@@ -133,15 +134,13 @@ def get_chat_by_tg_id(tg_chat_id):
     finally:
         session.close()
 
-def get_moderators(tg_chat_id):
-    """Получить модераторов чата по tg_chat_id"""
+def get_moderators(chat_id):
+    """Получить модераторов по chat_id"""
     session = Session()
     try:
-        chat = session.query(Chat).filter_by(tg_chat_id=str(tg_chat_id)).first()
-        if not chat:
-            return []
-        mods = session.query(Moderator).filter_by(chat_id=chat.id).all()
-        return [m.moderator_id for m in mods]
+        # Получаем всех активных модераторов системы
+        mods = session.query(Moderator).filter_by(is_active=True).all()
+        return [(m.tg_user_id, m.username) for m in mods]
     finally:
         session.close()
 
@@ -171,7 +170,7 @@ async def download_file(file_id, file_name):
 async def notify_mods(chat_id, result):
     """Уведомить модераторов"""
     try:
-        mods = get_moderators(str(chat_id))
+        mods = get_moderators(chat_id)
         if not mods:
             logger.info(f"📬 Чат {chat_id}: модераторы не найдены")
             return
@@ -196,13 +195,14 @@ async def notify_mods(chat_id, result):
             text = f"✅ @{user} - нарушений не найдено"
         
         sent = 0
-        for mod_id in mods:
+        for mod_id, username in mods:
             try:
                 await bot.send_message(int(mod_id), text, parse_mode="Markdown")
                 logger.info(f"✅ Уведомление {mod_id}")
                 sent += 1
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки {mod_id}: {e}")
+        
         logger.info(f"📊 Отправлено: {sent}/{len(mods)}")
     except Exception as e:
         logger.error(f"❌ Ошибка уведомления: {e}")
@@ -217,6 +217,7 @@ async def start(msg: Message):
     text = """👋 *Добро пожаловать в TeleGuard Bot!*
 
 🤖 Я помогу модерировать ваш чат:
+
 • Анализирую сообщения и фото
 • Применяю действия (warn, mute, ban)
 • Уведомляю модераторов
@@ -262,49 +263,98 @@ async def register_chat_id(msg: Message, state: FSMContext):
         session.add(new_chat)
         session.flush()  # Получаем ID
         
-        # Добавляем модератора
-        moderator = Moderator(chat_id=new_chat.id, moderator_id=str(msg.from_user.id))
-        session.add(moderator)
-        session.commit()
+        # Добавляем модератора (текущего пользователя)
+        existing_mod = session.query(Moderator).filter_by(tg_user_id=msg.from_user.id).first()
+        if not existing_mod:
+            moderator = Moderator(
+                tg_user_id=msg.from_user.id,
+                username=msg.from_user.username,
+                first_name=msg.from_user.first_name,
+                is_active=True
+            )
+            session.add(moderator)
         
+        session.commit()
         logger.info(f"✅ Чат {chat_id} зарегистрирован")
-        await msg.answer(f"✅ Чат {chat_id} успешно зарегистрирован!\nТы - модератор.", reply_markup=get_main_keyboard())
+        
+        await msg.answer(
+            f"✅ Чат {chat_id} успешно зарегистрирован!\nТы - модератор.",
+            reply_markup=get_main_keyboard()
+        )
     except Exception as e:
         logger.error(f"❌ Ошибка БД: {e}")
         await msg.answer(f"❌ Ошибка: {e}")
         session.rollback()
     finally:
         session.close()
-    
-    await state.clear()
+        await state.clear()
 
 @dp.message(F.text == "👥 Список модераторов")
-async def list_mods(msg: Message, state: FSMContext):
+async def list_mods(msg: Message):
     """Список модераторов"""
-    await msg.answer("📝 Введи ID чата:", reply_markup=get_cancel_keyboard())
-    await state.set_state(RegisterState.waiting_chat_id)
+    session = Session()
+    try:
+        mods = session.query(Moderator).filter_by(is_active=True).all()
+        if not mods:
+            await msg.answer("❌ Модераторов не найдено", reply_markup=get_main_keyboard())
+            return
+        
+        text = "👥 *Список модераторов:*\n\n"
+        for i, mod in enumerate(mods, 1):
+            username = mod.username or "—"
+            text += f"{i}. {mod.first_name or 'Unknown'} (@{username}) - ID: `{mod.tg_user_id}`\n"
+        
+        await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        await msg.answer(f"❌ Ошибка: {e}", reply_markup=get_main_keyboard())
+    finally:
+        session.close()
 
 @dp.message(F.text == "➕ Добавить модератора")
 async def add_mod_start(msg: Message, state: FSMContext):
     """Добавить модератора"""
-    await msg.answer("📝 Введи ID чата:", reply_markup=get_cancel_keyboard())
-    await state.set_state(RegisterState.waiting_chat_id)
+    await msg.answer(
+        "📝 Введи ID пользователя (или username в формате @username):",
+        reply_markup=get_cancel_keyboard()
+    )
+    await state.set_state(RegisterState.waiting_mod_id)
 
-@dp.message(RegisterState.waiting_chat_id, F.text != "❌ Отмена")
-async def handle_chat_id(msg: Message, state: FSMContext):
-    """Обработка ID чата"""
-    tg_chat_id = msg.text
-    mods = get_moderators(tg_chat_id)
+@dp.message(RegisterState.waiting_mod_id)
+async def add_mod_process(msg: Message, state: FSMContext):
+    """Добавляем модератора"""
+    if msg.text == "❌ Отмена":
+        await msg.answer("❌ Отмена", reply_markup=get_main_keyboard())
+        await state.clear()
+        return
     
-    if not mods:
-        await msg.answer(f"❌ Чат {tg_chat_id} не найден", reply_markup=get_main_keyboard())
-    else:
-        text = f"👥 *Модераторы чата {tg_chat_id}:*\n\n"
-        for i, mod_id in enumerate(mods, 1):
-            text += f"{i}. `{mod_id}`\n"
-        await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    try:
+        mod_id = int(msg.text)
+    except:
+        await msg.answer("❌ Неверный ID! Должно быть число. Попробуй ещё:")
+        return
     
-    await state.clear()
+    session = Session()
+    try:
+        existing = session.query(Moderator).filter_by(tg_user_id=mod_id).first()
+        if existing:
+            await msg.answer(f"✅ Пользователь {mod_id} уже модератор!", reply_markup=get_main_keyboard())
+            await state.clear()
+            return
+        
+        moderator = Moderator(tg_user_id=mod_id, is_active=True)
+        session.add(moderator)
+        session.commit()
+        
+        logger.info(f"✅ Модератор {mod_id} добавлен")
+        await msg.answer(f"✅ Пользователь {mod_id} добавлен как модератор!", reply_markup=get_main_keyboard())
+    except Exception as e:
+        logger.error(f"❌ Ошибка БД: {e}")
+        await msg.answer(f"❌ Ошибка: {e}")
+        session.rollback()
+    finally:
+        session.close()
+        await state.clear()
 
 @dp.message(F.text == "📊 Статус")
 async def status(msg: Message):
@@ -315,8 +365,8 @@ async def status(msg: Message):
         
         session = Session()
         try:
-            chats_count = session.query(Chat).count()
-            mods_count = session.query(Moderator).count()
+            chats_count = session.query(Chat).filter_by(is_active=True).count()
+            mods_count = session.query(Moderator).filter_by(is_active=True).count()
         finally:
             session.close()
         
@@ -347,6 +397,7 @@ async def help_cmd(msg: Message):
     text = """ℹ️ *СПРАВКА*
 
 📋 *Команды меню:*
+
 • Регистрация чата - зарегистрировать чат
 • Список модераторов - показать модераторов
 • Добавить модератора - добавить нового модератора
@@ -468,7 +519,6 @@ async def redis_stats(query):
 async def result_reader():
     """Читает результаты и уведомляет"""
     logger.info("📥 READER: Слушаю результаты")
-    
     while True:
         try:
             result = redis_client.blpop(QUEUE_AGENT_2_OUTPUT, timeout=1)
@@ -500,9 +550,7 @@ async def result_reader():
 
 async def main():
     logger.info("✅ БОТ ЗАПУЩЕН!")
-    
     reader_task = asyncio.create_task(result_reader())
-    
     try:
         await dp.start_polling(bot)
     finally:
