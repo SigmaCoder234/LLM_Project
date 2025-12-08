@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🤖 АГЕНТ №2 — ГЛАВНЫЙ АНАЛИТИК (Исправленный)
-✅ ИСПРАВЛЕНО: Передача severity в выходе
-✅ ИСПРАВЛЕНО: Передача message_link из входа
-✅ ИСПРАВЛЕНО: НЕ отправляем OK сообщения (action == "none")
+🤖 АГЕНТ №2 — ГЛАВНЫЙ АНАЛИТИК (ИСПРАВЛЕННЫЙ v2)
+✅ ИСПРАВЛЕНО: Всегда пишем результаты в QUEUE_AGENT_2_OUTPUT для бота
+✅ ИСПРАВЛЕНО: Severity правильно передаётся
+✅ ИСПРАВЛЕНО: message_link передаётся
 """
 
 import json
@@ -142,6 +142,7 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
         )
         
         content = response.choices[0].message.content
+        logger.info(f"🔍 Mistral ответ: {content[:100]}")
         
         # Парсим JSON
         try:
@@ -153,7 +154,7 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
                 result = json.loads(json_str)
                 
                 # Нормализуем
-                severity = int(result.get("severity", 5))
+                severity = int(result.get("severity", 0))
                 severity = min(10, max(0, severity))
                 
                 confidence = int(result.get("confidence", 50))
@@ -163,10 +164,12 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
                 if action not in ["ban", "mute", "warn", "none"]:
                     action = "warn" if result.get("is_violation") else "none"
                 
-                logger.info(f"✅ Анализ: severity={severity}, action={action}, confidence={confidence}%")
+                is_violation = result.get("is_violation", False)
+                
+                logger.info(f"✅ Анализ: severity={severity}, action={action}, confidence={confidence}%, violation={is_violation}")
                 
                 return {
-                    "is_violation": result.get("is_violation", False),
+                    "is_violation": is_violation,
                     "type": result.get("type", "unknown"),
                     "severity": severity,
                     "confidence": confidence,
@@ -176,30 +179,12 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
                 }
         except Exception as e:
             logger.error(f"⚠️ Ошибка парсинга JSON: {e}")
-            
-            # Fallback: парсим текст вручную
-            severity_match = re.search(r'severity["\']?\s*[:=]\s*(\d+)', content, re.IGNORECASE)
-            severity = int(severity_match.group(1)) if severity_match else 5
-            severity = min(10, max(0, severity))
-            
-            confidence_match = re.search(r'confidence["\']?\s*[:=]\s*(\d+)', content, re.IGNORECASE)
-            confidence = int(confidence_match.group(1)) if confidence_match else 50
-            confidence = min(100, max(0, confidence))
-            
-            action = "none"
-            if "ban" in content.lower():
-                action = "ban"
-            elif "mute" in content.lower():
-                action = "mute"
-            elif "warn" in content.lower():
-                action = "warn"
-            
             return {
-                "is_violation": action != "none",
+                "is_violation": False,
                 "type": "unknown",
-                "severity": severity,
-                "confidence": confidence,
-                "action": action,
+                "severity": 0,
+                "confidence": 0,
+                "action": "none",
                 "reason": "Ошибка парсинга",
                 "explanation": content[:300]
             }
@@ -229,8 +214,8 @@ def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
     username = input_data.get("username", "unknown")
     chat_id = input_data.get("chat_id")
     message_id = input_data.get("message_id")
-    message_link = input_data.get("message_link", "")  # ✅ ПОЛУЧАЕМ message_link
-    media_type = input_data.get("media_type", "")  # ✅ ПОЛУЧАЕМ media_type
+    message_link = input_data.get("message_link", "")
+    media_type = input_data.get("media_type", "")
     
     logger.info(f"🔍 Анализирую сообщение от @{username}: '{message[:50]}...'")
     
@@ -262,15 +247,15 @@ def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "username": username,
         "chat_id": chat_id,
         "message_id": message_id,
-        "message_link": message_link,  # ✅ ДОБАВЛЕНО
+        "message_link": message_link,
         "action": analysis_result["action"],
-        "severity": analysis_result["severity"],  # ✅ ДОБАВЛЕНО
+        "severity": analysis_result["severity"],
         "confidence": analysis_result["confidence"],
         "reason": analysis_result["reason"],
         "type": analysis_result["type"],
         "explanation": analysis_result["explanation"],
         "is_violation": analysis_result["is_violation"],
-        "media_type": media_type,  # ✅ ДОБАВЛЕНО
+        "media_type": media_type,
         "timestamp": datetime.now().isoformat()
     }
     
@@ -331,16 +316,20 @@ class Agent2Worker:
                     # Обрабатываем
                     output = moderation_agent_2(input_data)
                     
-                    # ✅ ПИШЕМ РЕЗУЛЬТАТ В REDIS (ТОЛЬКО если action != "none")
+                    # ✅ ВСЕГДА пишем результат в REDIS (для бота и агентов)
                     try:
                         result_json = json.dumps(output, ensure_ascii=False)
                         
-                        # Отправляем в очередь агентов 3 и 4 И в очередь бота!
+                        # ✅ СНАЧАЛА в очередь БОТа!
                         self.redis_client.rpush(QUEUE_AGENT_2_OUTPUT, result_json)
-                        self.redis_client.rpush(QUEUE_AGENT_3_INPUT, result_json)
-                        self.redis_client.rpush(QUEUE_AGENT_4_INPUT, result_json)
+                        logger.info(f"📤 ✅ Результат в БОТ: {output.get('action')} (severity={output.get('severity')})")
                         
-                        logger.info(f"📤 ✅ Результат отправлен (action={output.get('action')})")
+                        # Потом агентам 3 и 4 (если нарушение)
+                        if output.get("is_violation"):
+                            self.redis_client.rpush(QUEUE_AGENT_3_INPUT, result_json)
+                            self.redis_client.rpush(QUEUE_AGENT_4_INPUT, result_json)
+                            logger.info(f"📤 ✅ Результат Агентам 3 и 4")
+                    
                     except Exception as e:
                         logger.error(f"❌ Ошибка отправки результата в Redis: {e}")
                     
@@ -367,3 +356,4 @@ if __name__ == "__main__":
         logger.info("Выход")
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
+        
