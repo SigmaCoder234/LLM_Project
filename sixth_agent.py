@@ -45,6 +45,8 @@ async def analyze_image_with_mistral(image_path: str) -> Dict[str, Any]:
     Анализирует изображение с помощью Mistral Vision
     """
     try:
+        logger.info(f"🔍 Начинаю анализ изображения: {image_path}")
+        
         # Читаем изображение и конвертируем в base64
         if not os.path.exists(image_path):
             logger.warning(f"⚠️ Файл не найден: {image_path}")
@@ -58,9 +60,13 @@ async def analyze_image_with_mistral(image_path: str) -> Dict[str, Any]:
         with open(image_path, "rb") as img_file:
             image_data = base64.b64encode(img_file.read()).decode("utf-8")
         
+        logger.info(f"📸 Файл прочитан: {len(image_data)} байт")
+        
         # Определяем тип файла
         file_ext = Path(image_path).suffix.lower()
         mime_type = "image/jpeg" if file_ext in [".jpg", ".jpeg"] else "image/png"
+        
+        logger.info(f"📋 MIME-type: {mime_type}")
         
         # Формируем запрос к Mistral Vision
         headers = {
@@ -82,15 +88,15 @@ async def analyze_image_with_mistral(image_path: str) -> Dict[str, Any]:
                         },
                         {
                             "type": "text",
-                            "text": """Проанализируй это изображение и ответь JSON:
+                            "text": """Проанализируй это изображение и ответь ТОЛЬКО JSON:
 {
   "has_nudity": boolean,
   "has_violence": boolean,
   "has_extremism": boolean,
   "has_inappropriate": boolean,
-  "severity": 0-10,
+  "severity": число 0-10,
   "description": "краткое описание",
-  "confidence": 0-1
+  "confidence": число 0-100
 }
 
 Ищи следующие нарушения:
@@ -107,14 +113,19 @@ async def analyze_image_with_mistral(image_path: str) -> Dict[str, Any]:
             "max_tokens": 300
         }
         
+        logger.info("🌐 Отправляю запрос к Mistral API...")
+        
         async with aiohttp.ClientSession() as session:
             async with session.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                logger.info(f"📡 Ответ от API: статус {resp.status}")
+                
                 if resp.status == 200:
                     result = await resp.json()
                     
                     # Парсим ответ
                     try:
                         response_text = result["choices"][0]["message"]["content"]
+                        logger.info(f"📝 Ответ Mistral: {response_text[:200]}")
                         
                         # Пытаемся найти JSON в ответе
                         json_start = response_text.find("{")
@@ -124,7 +135,13 @@ async def analyze_image_with_mistral(image_path: str) -> Dict[str, Any]:
                             json_str = response_text[json_start:json_end]
                             analysis = json.loads(json_str)
                             
-                            logger.info(f"✅ Анализ: severity={analysis.get('severity', 0)}, nudity={analysis.get('has_nudity', False)}")
+                            severity = int(analysis.get("severity", 0))
+                            severity = min(10, max(0, severity))
+                            
+                            confidence = int(analysis.get("confidence", 50))
+                            confidence = min(100, max(0, confidence))
+                            
+                            logger.info(f"✅ Анализ: severity={severity}, nudity={analysis.get('has_nudity', False)}, confidence={confidence}%")
                             
                             return {
                                 "verdict": any([
@@ -134,8 +151,8 @@ async def analyze_image_with_mistral(image_path: str) -> Dict[str, Any]:
                                     analysis.get("has_inappropriate", False)
                                 ]),
                                 "reason": analysis.get("description", "Контент нарушает правила"),
-                                "severity": int(analysis.get("severity", 5)),
-                                "confidence": float(analysis.get("confidence", 0.7)),
+                                "severity": severity,
+                                "confidence": confidence,
                                 "details": analysis
                             }
                     except Exception as e:
@@ -147,7 +164,8 @@ async def analyze_image_with_mistral(image_path: str) -> Dict[str, Any]:
                             "confidence": 0.5
                         }
                 else:
-                    logger.error(f"❌ API ошибка: {resp.status}")
+                    error_text = await resp.text()
+                    logger.error(f"❌ API ошибка: {resp.status} - {error_text[:200]}")
                     return {
                         "verdict": False,
                         "reason": f"API ошибка: {resp.status}",
@@ -180,6 +198,7 @@ async def process_media(media_data: Dict[str, Any]) -> Dict[str, Any]:
         user_id = media_data.get("user_id", 0)
         message_id = media_data.get("message_id", 0)
         caption = media_data.get("caption", "")
+        message_link = media_data.get("message_link", "")
         
         logger.info(f"🔍 Анализирую {media_type}: {local_path}")
         
@@ -215,15 +234,18 @@ async def process_media(media_data: Dict[str, Any]) -> Dict[str, Any]:
             "username": username,
             "chat_id": chat_id,
             "message_id": message_id,
-            "message_link": media_data.get("message_link", ""),
+            "message_link": message_link,
             "caption": caption,
             "verdict": verdict,
-            "action": "delete" if verdict else "none",
+            "action": "ban" if verdict else "none",
             "reason": reason,
             "severity": severity,
             "confidence": confidence,
+            "is_violation": verdict,
             "timestamp": datetime.now().isoformat()
         }
+        
+        logger.info(f"📤 Выход готов: action={output.get('action')}, severity={severity}")
         
         return output
     
@@ -236,10 +258,14 @@ async def process_media(media_data: Dict[str, Any]) -> Dict[str, Any]:
             "username": media_data.get("username", "unknown"),
             "chat_id": media_data.get("chat_id", 0),
             "message_id": media_data.get("message_id", 0),
+            "message_link": media_data.get("message_link", ""),
             "verdict": False,
+            "action": "none",
             "reason": f"Ошибка: {str(e)}",
             "severity": 0,
-            "confidence": 0
+            "confidence": 0,
+            "is_violation": False,
+            "timestamp": datetime.now().isoformat()
         }
 
 # ============================================================================
@@ -282,17 +308,19 @@ class Agent6Worker:
                         logger.error(f"❌ Невалидный JSON: {e}")
                         continue
                     
+                    logger.info(f"📄 Данные медиа: media_type={input_data.get('media_type')}")
+                    
                     # Обрабатываем асинхронно
                     output = asyncio.run(process_media(input_data))
                     
-                    # ✅ ПИШЕМ РЕЗУЛЬТАТ В REDIS для БОТа (ИСПРАВЛЕНО!)
+                    # ✅ ПИШЕМ РЕЗУЛЬТАТ В REDIS для БОТа
                     try:
                         result_json = json.dumps(output, ensure_ascii=False)
                         
-                        # ПРАВИЛЬНАЯ ОЧЕРЕДЬ ИЗ CONFIG
+                        # ОЧЕРЕДЬ ДЛЯ БОТа
                         self.redis_client.rpush(QUEUE_AGENT_6_OUTPUT, result_json)
                         
-                        logger.info(f"📤 ✅ Результат отправлен в Redis: {output.get('verdict')}")
+                        logger.info(f"📤 ✅ Результат отправлен в БОТ: verdict={output.get('verdict')}, severity={output.get('severity')}")
                     except Exception as e:
                         logger.error(f"❌ Ошибка отправки результата в Redis: {e}")
                     
