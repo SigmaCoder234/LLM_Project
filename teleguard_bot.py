@@ -4,6 +4,8 @@
 🤖 TELEGUARD BOT - ИНТЕРФЕЙС ВЕРСИЯ
 ✅ ИСПРАВЛЕНО: Правильная схема БД из PostgreSQL (tg_user_id вместо moderator_id)
 ✅ УЛУЧШЕНО: Информативные сообщения о нарушениях
+✅ ИСПРАВЛЕНО: Передача message_link и severity из агента 2
+✅ ИСПРАВЛЕНО: НЕ отправляем сообщения когда нет нарушений (только для текста)
 """
 
 import json
@@ -181,13 +183,14 @@ async def notify_mods(chat_id, result):
         # Извлекаем данные из результата
         action = result.get("action", "none")
         username = result.get("user", result.get("username", "unknown"))
-        severity = result.get("severity", 0)
+        severity = result.get("severity", 5)  # Default 5 if not set
         reason = result.get("reason", "Нарушение правил")
         verdict = result.get("verdict", None)
         message_text = result.get("message", "")
         message_link = result.get("message_link", "")
         confidence = result.get("confidence", 0)
         timestamp = result.get("timestamp", "")
+        media_type = result.get("media_type", "")
         
         # Форматируем timestamp
         if timestamp:
@@ -199,6 +202,12 @@ async def notify_mods(chat_id, result):
         else:
             formatted_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
+        # ✅ ИСПРАВЛЕНО: НЕ отправляем "OK" сообщения для текста
+        # Для фото отправляем OK, для текста - только нарушения
+        if action == "none" and not media_type:
+            logger.info(f"✅ Сообщение от @{username} в порядке - не отправляем уведомление")
+            return
+        
         # Формируем полное сообщение
         if action in ["ban", "mute", "warn"]:
             emoji = {"ban": "🚫", "mute": "🔇", "warn": "⚠️"}[action]
@@ -206,7 +215,7 @@ async def notify_mods(chat_id, result):
             text = f"""{emoji} *{action.upper()}*
 
 👤 *Пользователь:* @{username}
-💬 *Сообщение:* {message_text if message_text else '(фото/медиа)'}
+💬 *Сообщение:* {message_text[:100] if message_text else '(нарушение)'}
 ⚠️ *Серьезность:* {severity}/10
 📊 *Уверенность:* {confidence}%
 🔨 *Действие:* {action.upper()}
@@ -214,7 +223,7 @@ async def notify_mods(chat_id, result):
 📝 *Причина:*
 {reason}
 
-🔗 *Ссылка:* {message_link if message_link else '(фото)'}
+🔗 *Ссылка:* {message_link if message_link else '(прямая ссылка недоступна)'}
 
 ⏰ *Время:* {formatted_time}"""
         
@@ -246,15 +255,7 @@ async def notify_mods(chat_id, result):
 
 ⏰ *Время:* {formatted_time}"""
         else:
-            text = f"""✅ *СООБЩЕНИЕ ОК*
-
-👤 *Пользователь:* @{username}
-💬 *Сообщение:* {message_text if message_text else '(текст)'}
-📊 *Уверенность:* {confidence}%
-
-@{username} - нарушений не найдено.
-
-⏰ *Время:* {formatted_time}"""
+            return  # Не отправляем OK сообщения
         
         # Отправляем всем модераторам
         sent = 0
@@ -494,7 +495,8 @@ async def handle_text(msg: Message):
             "chat_id": msg.chat.id,
             "message_id": msg.message_id,
             "timestamp": datetime.now().isoformat(),
-            "message_link": f"https://t.me/c/{str(msg.chat.id)[4:]}/{msg.message_id}"
+            "message_link": f"https://t.me/c/{str(msg.chat.id)[4:]}/{msg.message_id}",
+            "media_type": ""  # ✅ ДОБАВЛЕНО: пустой media_type для текста
         }
         
         redis_client.rpush(QUEUE_AGENT_2_INPUT, json.dumps(data, ensure_ascii=False))
