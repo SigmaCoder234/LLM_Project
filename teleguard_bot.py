@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🤖 TELEGUARD BOT - ИНТЕРФЕЙС ВЕРСИЯ
-✅ ИСПРАВЛЕНО: Правильная схема БД из PostgreSQL (tg_user_id вместо moderator_id)
-✅ УЛУЧШЕНО: Информативные сообщения о нарушениях
-✅ ИСПРАВЛЕНО: Передача message_link и severity из агента 2
-✅ ИСПРАВЛЕНО: НЕ отправляем сообщения когда нет нарушений (только для текста)
+🤖 TELEGUARD BOT - ИНТЕРФЕЙС ВЕРСИЯ (v3)
+✅ ИСПРАВЛЕНО: Правильная обработка severity
+✅ ИСПРАВЛЕНО: Передача message_link в сообщении
+✅ ИСПРАВЛЕНО: Отправляем ВСЕ результаты (violation и non-violation)
 """
 
 import json
@@ -21,10 +20,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, DateTime, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
-
-# ============================================================================
-# ИМПОРТ КОНФИГА
-# ============================================================================
 
 try:
     from config import (
@@ -47,7 +42,7 @@ bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
 # ============================================================================
-# БД (СИНХРОНИЗИРОВАННАЯ СХЕМА С POSTGRES)
+# БД
 # ============================================================================
 
 engine = create_engine(get_db_connection_string())
@@ -66,10 +61,10 @@ class Chat(Base):
     custom_rules = Column(String)
 
 class Moderator(Base):
-    """Таблица moderators - СИНХРОНИЗИРОВАНА"""
+    """Таблица moderators"""
     __tablename__ = "moderators"
     id = Column(Integer, primary_key=True)
-    tg_user_id = Column(BigInteger, unique=True, nullable=False)  # ИСПРАВЛЕНО: BigInteger + unique
+    tg_user_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String)
     first_name = Column(String)
     is_active = Column(Boolean, default=True)
@@ -141,7 +136,6 @@ def get_moderators(chat_id):
     """Получить модераторов по chat_id"""
     session = Session()
     try:
-        # Получаем всех активных модераторов системы
         mods = session.query(Moderator).filter_by(is_active=True).all()
         return [(m.tg_user_id, m.username) for m in mods]
     finally:
@@ -171,7 +165,7 @@ async def download_file(file_id, file_name):
     return None
 
 async def notify_mods(chat_id, result):
-    """Уведомить модераторов - ИНФОРМАТИВНАЯ ВЕРСИЯ"""
+    """Уведомить модераторов"""
     try:
         mods = get_moderators(chat_id)
         if not mods:
@@ -183,11 +177,12 @@ async def notify_mods(chat_id, result):
         # Извлекаем данные из результата
         action = result.get("action", "none")
         username = result.get("user", result.get("username", "unknown"))
-        severity = result.get("severity", 5)  # Default 5 if not set
+        severity = result.get("severity", 0)  # ✅ ПОЛУЧАЕМ severity
         reason = result.get("reason", "Нарушение правил")
         verdict = result.get("verdict", None)
+        is_violation = result.get("is_violation", verdict)
         message_text = result.get("message", "")
-        message_link = result.get("message_link", "")
+        message_link = result.get("message_link", "")  # ✅ ПОЛУЧАЕМ message_link
         confidence = result.get("confidence", 0)
         timestamp = result.get("timestamp", "")
         media_type = result.get("media_type", "")
@@ -202,20 +197,20 @@ async def notify_mods(chat_id, result):
         else:
             formatted_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # ✅ ИСПРАВЛЕНО: НЕ отправляем "OK" сообщения для текста
-        # Для фото отправляем OK, для текста - только нарушения
+        # ✅ ИСПРАВЛЕНО: Проверяем правильно!
+        # Если это текст И нет нарушения - НЕ отправляем
         if action == "none" and not media_type:
             logger.info(f"✅ Сообщение от @{username} в порядке - не отправляем уведомление")
             return
         
-        # Формируем полное сообщение
+        # Формируем сообщение
         if action in ["ban", "mute", "warn"]:
             emoji = {"ban": "🚫", "mute": "🔇", "warn": "⚠️"}[action]
             
             text = f"""{emoji} *{action.upper()}*
 
 👤 *Пользователь:* @{username}
-💬 *Сообщение:* {message_text[:100] if message_text else '(нарушение)'}
+💬 *Сообщение:* {message_text[:100] if message_text else '(текст)'}
 ⚠️ *Серьезность:* {severity}/10
 📊 *Уверенность:* {confidence}%
 🔨 *Действие:* {action.upper()}
@@ -223,17 +218,17 @@ async def notify_mods(chat_id, result):
 📝 *Причина:*
 {reason}
 
-🔗 *Ссылка:* {message_link if message_link else '(прямая ссылка недоступна)'}
+🔗 *Ссылка:* {message_link if message_link else '(ссылка недоступна)'}
 
 ⏰ *Время:* {formatted_time}"""
         
-        elif verdict is not None:
+        elif is_violation is not None and media_type:
             # Для фото
-            if verdict:
+            if is_violation:
                 text = f"""🚨 *НАРУШЕНИЕ ОБНАРУЖЕНО*
 
 👤 *Пользователь:* @{username}
-📸 *Контент:* Фото/Изображение
+📸 *Контент:* {media_type.upper()}
 ⚠️ *Серьезность:* {severity}/10
 📊 *Уверенность:* {confidence}%
 🔨 *Действие:* BAN
@@ -245,17 +240,10 @@ async def notify_mods(chat_id, result):
 
 ⏰ *Время:* {formatted_time}"""
             else:
-                text = f"""✅ *КОНТЕНТ ОК*
-
-👤 *Пользователь:* @{username}
-📸 *Контент:* Фото/Изображение
-📊 *Уверенность:* {confidence}%
-
-Фото от @{username} - нарушений не найдено.
-
-⏰ *Время:* {formatted_time}"""
+                logger.info(f"✅ Фото от @{username} в порядке - не отправляем уведомление")
+                return
         else:
-            return  # Не отправляем OK сообщения
+            return
         
         # Отправляем всем модераторам
         sent = 0
@@ -325,7 +313,7 @@ async def register_chat_id(msg: Message, state: FSMContext):
         # Добавляем чат
         new_chat = Chat(tg_chat_id=chat_id, is_active=True)
         session.add(new_chat)
-        session.flush()  # Получаем ID
+        session.flush()
         
         # Добавляем модератора (текущего пользователя)
         existing_mod = session.query(Moderator).filter_by(tg_user_id=msg.from_user.id).first()
@@ -496,7 +484,7 @@ async def handle_text(msg: Message):
             "message_id": msg.message_id,
             "timestamp": datetime.now().isoformat(),
             "message_link": f"https://t.me/c/{str(msg.chat.id)[4:]}/{msg.message_id}",
-            "media_type": ""  # ✅ ДОБАВЛЕНО: пустой media_type для текста
+            "media_type": ""
         }
         
         redis_client.rpush(QUEUE_AGENT_2_INPUT, json.dumps(data, ensure_ascii=False))
@@ -588,20 +576,24 @@ async def result_reader():
     logger.info("📥 READER: Слушаю результаты")
     while True:
         try:
-            result = redis_client.blpop(QUEUE_AGENT_2_OUTPUT, timeout=1)
+            # ✅ Читаем из QUEUE_AGENT_2_OUTPUT (от агента 2)
+            result = redis_client.blpop(QUEUE_AGENT_2_OUTPUT, timeout=0.5)
             if result:
                 _, data = result
                 try:
                     j = json.loads(data)
+                    logger.info(f"📨 Результат от Агента 2: action={j.get('action')}, severity={j.get('severity')}")
                     await notify_mods(j.get("chat_id"), j)
                 except Exception as e:
                     logger.error(f"❌ Ошибка обработки результата: {e}")
             
-            result = redis_client.blpop(QUEUE_AGENT_6_OUTPUT, timeout=1)
+            # ✅ Читаем из QUEUE_AGENT_6_OUTPUT (от агента 6)
+            result = redis_client.blpop(QUEUE_AGENT_6_OUTPUT, timeout=0.5)
             if result:
                 _, data = result
                 try:
                     j = json.loads(data)
+                    logger.info(f"📨 Результат от Агента 6: action={j.get('action')}, severity={j.get('severity')}")
                     await notify_mods(j.get("chat_id"), j)
                 except Exception as e:
                     logger.error(f"❌ Ошибка обработки результата: {e}")
