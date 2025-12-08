@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 🤖 АГЕНТ №6 — АНАЛИЗ МЕДИА (PHOTO + VIDEO)
-
 ✅ Получает фото/видео из Redis
 ✅ Использует Mistral Vision для анализа
 ✅ ПИШЕТ РЕЗУЛЬТАТЫ В REDIS для БОТа
@@ -117,9 +115,11 @@ async def analyze_image_with_mistral(image_path: str) -> Dict[str, Any]:
                     # Парсим ответ
                     try:
                         response_text = result["choices"][0]["message"]["content"]
+                        
                         # Пытаемся найти JSON в ответе
                         json_start = response_text.find("{")
                         json_end = response_text.rfind("}") + 1
+                        
                         if json_start >= 0 and json_end > json_start:
                             json_str = response_text[json_start:json_end]
                             analysis = json.loads(json_str)
@@ -261,8 +261,8 @@ class Agent6Worker:
         """Главный цикл обработки медиа"""
         logger.info("✅ Агент 6 запущен (Анализ медиа)")
         logger.info(f"📬 Слушаю очередь: {QUEUE_AGENT_6_INPUT}")
-        logger.info(f"📤 Результаты в очередь: queue:agent6:output")
-        logger.info("⏱️  Нажмите Ctrl+C для остановки\n")
+        logger.info(f"📤 Результаты в очередь: {QUEUE_AGENT_6_OUTPUT}")
+        logger.info("⏱️ Нажмите Ctrl+C для остановки\n")
         
         try:
             while True:
@@ -285,11 +285,13 @@ class Agent6Worker:
                     # Обрабатываем асинхронно
                     output = asyncio.run(process_media(input_data))
                     
-                    # ✅ ПИШЕМ РЕЗУЛЬТАТ В REDIS для БОТа
+                    # ✅ ПИШЕМ РЕЗУЛЬТАТ В REDIS для БОТа (ИСПРАВЛЕНО!)
                     try:
                         result_json = json.dumps(output, ensure_ascii=False)
-                        # Пишем в очередь для бота
-                        self.redis_client.rpush("queue:agent6:output", result_json)
+                        
+                        # ПРАВИЛЬНАЯ ОЧЕРЕДЬ ИЗ CONFIG
+                        self.redis_client.rpush(QUEUE_AGENT_6_OUTPUT, result_json)
+                        
                         logger.info(f"📤 ✅ Результат отправлен в Redis: {output.get('verdict')}")
                     except Exception as e:
                         logger.error(f"❌ Ошибка отправки результата в Redis: {e}")
