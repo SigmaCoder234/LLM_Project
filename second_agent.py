@@ -2,15 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-🤖 АГЕНТ №2 — ФИНАЛЬНЫЙ КОД С CHATMESSAGE ОБЁРТКОЙ
-✅ Создаём ChatMessage объекты из dict'ов перед отправкой
-✅ РАБОТАЕТ с mistralai 0.0.11
+🤖 АГЕНТ №2 — С ДЕДУПЛИКАЦИЕЙ
+✅ Обрабатывает сообщение ОДИН раз
+✅ Пропускает дубликаты
+✅ Отправляет результат только один раз
 """
 
 import json
 import redis
 import time
-import re
 from typing import Dict, Any, List
 from datetime import datetime
 
@@ -63,7 +63,6 @@ logger = setup_logging("АГЕНТ 2")
 
 if MISTRAL_IMPORT_SUCCESS:
     logger.info(f"✅ Mistral AI импортирован ({MISTRAL_IMPORT_VERSION})")
-    logger.info(f"✅ ChatMessage класс импортирован")
 else:
     logger.error("❌ Mistral AI не импортирован")
 
@@ -127,6 +126,23 @@ JSON ФОРМАТ:
 }}"""
 
 # ============================================================================
+# ТРЕКЕР ОБРАБОТАННЫХ СООБЩЕНИЙ
+# ============================================================================
+
+processed_messages = set()
+
+def mark_processed(chat_id: int, message_id: int):
+    """Отмечает сообщение как обработанное"""
+    key = f"{chat_id}:{message_id}"
+    processed_messages.add(key)
+    logger.debug(f"✅ Отмечено обработанным: {key}")
+
+def is_processed(chat_id: int, message_id: int) -> bool:
+    """Проверяет, обработано ли сообщение"""
+    key = f"{chat_id}:{message_id}"
+    return key in processed_messages
+
+# ============================================================================
 # АНАЛИЗ С MISTRAL
 # ============================================================================
 
@@ -149,7 +165,7 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
         rules_text = "\n".join([f"- {rule}" for rule in rules]) if rules else "- Никаких правил"
         prompt = MODERATION_PROMPT.format(rules=rules_text, message=message)
         
-        # ✅ КЛЮЧЕВОЙ МОМЕНТ: Создаём ChatMessage объекты!
+        # ✅ Создаём ChatMessage объекты
         messages = [ChatMessage(role="user", content=prompt)]
         
         logger.info(f"📤 Отправляю запрос к Mistral...")
@@ -340,14 +356,29 @@ class Agent2Worker:
                         logger.error(f"❌ Невалидный JSON: {e}")
                         continue
                     
+                    # ✅ ДЕДУПЛИКАЦИЯ: Проверяем, обработано ли сообщение
+                    chat_id = input_data.get("chat_id")
+                    message_id = input_data.get("message_id")
+                    
+                    if chat_id and message_id:
+                        if is_processed(chat_id, message_id):
+                            logger.info(f"⏭️  Пропускаю дубликат (msg_id={message_id})")
+                            continue
+                    
+                    # Обрабатываем сообщение
                     output = moderation_agent_2(input_data)
                     
+                    # ✅ ОТПРАВЛЯЕМ ОДИН РАЗ в три очереди
                     try:
                         result_json = json.dumps(output, ensure_ascii=False)
                         
                         self.redis_client.rpush(QUEUE_AGENT_2_OUTPUT, result_json)
                         self.redis_client.rpush(QUEUE_AGENT_3_INPUT, result_json)
                         self.redis_client.rpush(QUEUE_AGENT_4_INPUT, result_json)
+                        
+                        # ✅ Отмечаем сообщение как обработанное
+                        if chat_id and message_id:
+                            mark_processed(chat_id, message_id)
                         
                         logger.info(f"📤 Результат отправлен (action={output.get('action')})\n")
                     except Exception as e:
