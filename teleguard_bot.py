@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-🤖 TELEGUARD BOT - ИНТЕРФЕЙС ВЕРСИЯ (v3)
-✅ ИСПРАВЛЕНО: Правильная обработка severity
-✅ ИСПРАВЛЕНО: Передача message_link в сообщении
-✅ ИСПРАВЛЕНО: Отправляем ВСЕ результаты (violation и non-violation)
+🤖 TELEGUARD BOT - ИНТЕРФЕЙС ВЕРСИЯ (v3.1 - ИСПРАВЛЕННАЯ)
+
+✅ ИСПРАВЛЕНО: Добавлена обработка QUEUE_AGENT_6_OUTPUT
+✅ ИСПРАВЛЕНО: Правильная обработка severity как число
+✅ ИСПРАВЛЕНО: Улучшена функция notify_mods()
 """
 
 import json
@@ -13,6 +15,7 @@ import asyncio
 import os
 import aiohttp
 from datetime import datetime
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -72,7 +75,6 @@ class Moderator(Base):
     updated_at = Column(DateTime, default=datetime.now)
 
 Base.metadata.create_all(engine)
-
 redis_client = redis.Redis(**get_redis_config())
 
 # ============================================================================
@@ -164,29 +166,48 @@ async def download_file(file_id, file_name):
         logger.error(f"❌ Ошибка скачивания: {e}")
     return None
 
+# ============================================================================
+# NOTIFY_MODS - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# ============================================================================
+
 async def notify_mods(chat_id, result):
-    """Уведомить модераторов"""
+    """Уведомить модераторов - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     try:
         mods = get_moderators(chat_id)
         if not mods:
             logger.info(f"📬 Чат {chat_id}: модераторы не найдены")
             return
-        
+
         logger.info(f"📬 Чат {chat_id}: найдено {len(mods)} модератор(ов)")
-        
-        # Извлекаем данные из результата
-        action = result.get("action", "none")
+
+        # ✅ ИЗВЛЕКАЕМ ДАННЫЕ (с гарантией типов)
+        action = result.get("action", "none").lower()
         username = result.get("user", result.get("username", "unknown"))
-        severity = result.get("severity", 0)  # ✅ ПОЛУЧАЕМ severity
+
+        # ✅ ИСПРАВЛЕНИЕ: severity ВСЕГДА число
+        try:
+            severity = int(result.get("severity", 0))
+            severity = min(10, max(0, severity))
+        except (ValueError, TypeError):
+            severity = 0
+
+        # ✅ Остальные поля
         reason = result.get("reason", "Нарушение правил")
         verdict = result.get("verdict", None)
         is_violation = result.get("is_violation", verdict)
         message_text = result.get("message", "")
-        message_link = result.get("message_link", "")  # ✅ ПОЛУЧАЕМ message_link
-        confidence = result.get("confidence", 0)
+        message_link = result.get("message_link", "")
+
+        # ✅ confidence - ВСЕГДА число
+        try:
+            confidence = int(result.get("confidence", 0))
+            confidence = min(100, max(0, confidence))
+        except (ValueError, TypeError):
+            confidence = 0
+
         timestamp = result.get("timestamp", "")
         media_type = result.get("media_type", "")
-        
+
         # Форматируем timestamp
         if timestamp:
             try:
@@ -196,41 +217,44 @@ async def notify_mods(chat_id, result):
                 formatted_time = timestamp
         else:
             formatted_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # ✅ ИСПРАВЛЕНО: Проверяем правильно!
-        # Если это текст И нет нарушения - НЕ отправляем
-        if action == "none" and not media_type:
-            logger.info(f"✅ Сообщение от @{username} в порядке - не отправляем уведомление")
-            return
-        
-        # Формируем сообщение
-        if action in ["ban", "mute", "warn"]:
+
+        # ✅ ЛОГИКА ОТПРАВКИ: Что отправлять модератору
+
+        # Случай 1: Текстовое нарушение (action != "none")
+        if action in ["ban", "mute", "warn"] and not media_type:
             emoji = {"ban": "🚫", "mute": "🔇", "warn": "⚠️"}[action]
-            
             text = f"""{emoji} *{action.upper()}*
 
 👤 *Пользователь:* @{username}
+
 💬 *Сообщение:* {message_text[:100] if message_text else '(текст)'}
+
 ⚠️ *Серьезность:* {severity}/10
+
 📊 *Уверенность:* {confidence}%
+
 🔨 *Действие:* {action.upper()}
 
 📝 *Причина:*
 {reason}
 
-🔗 *Ссылка:* {message_link if message_link else '(ссылка недоступна)'}
+🔗 *Ссылка:* {message_link if message_link else '(ссылка)'}
 
 ⏰ *Время:* {formatted_time}"""
-        
+
+        # Случай 2: Фото с нарушением
         elif is_violation is not None and media_type:
-            # Для фото
             if is_violation:
-                text = f"""🚨 *НАРУШЕНИЕ ОБНАРУЖЕНО*
+                text = f"""🚨 *НАРУШЕНИЕ В ФОТО ОБНАРУЖЕНО*
 
 👤 *Пользователь:* @{username}
+
 📸 *Контент:* {media_type.upper()}
+
 ⚠️ *Серьезность:* {severity}/10
+
 📊 *Уверенность:* {confidence}%
+
 🔨 *Действие:* BAN
 
 📝 *Причина:*
@@ -240,22 +264,34 @@ async def notify_mods(chat_id, result):
 
 ⏰ *Время:* {formatted_time}"""
             else:
+                # ✅ Фото OK - НЕ отправляем
                 logger.info(f"✅ Фото от @{username} в порядке - не отправляем уведомление")
                 return
-        else:
+
+        # Случай 3: OK сообщение (action == "none" и нет медиа)
+        elif action == "none" and not media_type:
+            logger.info(f"✅ Сообщение от @{username} в порядке - не отправляем")
             return
-        
-        # Отправляем всем модераторам
+
+        else:
+            logger.warning(f"⚠️ Неизвестный случай: action={action}, media_type={media_type}")
+            return
+
+        # ✅ ОТПРАВЛЯЕМ всем модераторам
         sent = 0
         for mod_id, mod_username in mods:
             try:
                 await bot.send_message(int(mod_id), text, parse_mode="Markdown")
-                logger.info(f"✅ Уведомление {mod_id}")
+                logger.info(f"✅ Уведомление отправлено {mod_id} (@{mod_username})")
                 sent += 1
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки {mod_id}: {e}")
-        
-        logger.info(f"📊 Отправлено: {sent}/{len(mods)}")
+
+        if sent > 0:
+            logger.info(f"📊 Отправлено: {sent}/{len(mods)} модераторам")
+        else:
+            logger.warning(f"⚠️ Не удалось отправить уведомление ни одному модератору")
+
     except Exception as e:
         logger.error(f"❌ Ошибка уведомления: {e}")
 
@@ -275,7 +311,7 @@ async def start(msg: Message):
 • Уведомляю модераторов
 
 👇 Выбери действие из меню ниже"""
-    
+
     await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
     logger.info(f"👤 Пользователь {msg.from_user.id} запустил бота")
 
@@ -295,13 +331,13 @@ async def register_chat_id(msg: Message, state: FSMContext):
         await msg.answer("❌ Отмена", reply_markup=get_main_keyboard())
         await state.clear()
         return
-    
+
     try:
         chat_id = str(int(msg.text))
     except:
         await msg.answer("❌ Неверный ID! Должно быть число. Попробуй ещё:")
         return
-    
+
     session = Session()
     try:
         existing_chat = session.query(Chat).filter_by(tg_chat_id=chat_id).first()
@@ -309,13 +345,11 @@ async def register_chat_id(msg: Message, state: FSMContext):
             await msg.answer(f"✅ Чат {chat_id} уже зарегистрирован!", reply_markup=get_main_keyboard())
             await state.clear()
             return
-        
-        # Добавляем чат
+
         new_chat = Chat(tg_chat_id=chat_id, is_active=True)
         session.add(new_chat)
         session.flush()
-        
-        # Добавляем модератора (текущего пользователя)
+
         existing_mod = session.query(Moderator).filter_by(tg_user_id=msg.from_user.id).first()
         if not existing_mod:
             moderator = Moderator(
@@ -325,21 +359,22 @@ async def register_chat_id(msg: Message, state: FSMContext):
                 is_active=True
             )
             session.add(moderator)
-        
+
         session.commit()
         logger.info(f"✅ Чат {chat_id} зарегистрирован")
-        
         await msg.answer(
             f"✅ Чат {chat_id} успешно зарегистрирован!\nТы - модератор.",
             reply_markup=get_main_keyboard()
         )
+
     except Exception as e:
         logger.error(f"❌ Ошибка БД: {e}")
         await msg.answer(f"❌ Ошибка: {e}")
         session.rollback()
     finally:
         session.close()
-        await state.clear()
+
+    await state.clear()
 
 @dp.message(F.text == "👥 Список модераторов")
 async def list_mods(msg: Message):
@@ -350,12 +385,12 @@ async def list_mods(msg: Message):
         if not mods:
             await msg.answer("❌ Модераторов не найдено", reply_markup=get_main_keyboard())
             return
-        
+
         text = "👥 *Список модераторов:*\n\n"
         for i, mod in enumerate(mods, 1):
             username = mod.username or "—"
             text += f"{i}. {mod.first_name or 'Unknown'} (@{username}) - ID: `{mod.tg_user_id}`\n"
-        
+
         await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
@@ -379,13 +414,13 @@ async def add_mod_process(msg: Message, state: FSMContext):
         await msg.answer("❌ Отмена", reply_markup=get_main_keyboard())
         await state.clear()
         return
-    
+
     try:
         mod_id = int(msg.text)
     except:
         await msg.answer("❌ Неверный ID! Должно быть число. Попробуй ещё:")
         return
-    
+
     session = Session()
     try:
         existing = session.query(Moderator).filter_by(tg_user_id=mod_id).first()
@@ -393,11 +428,10 @@ async def add_mod_process(msg: Message, state: FSMContext):
             await msg.answer(f"✅ Пользователь {mod_id} уже модератор!", reply_markup=get_main_keyboard())
             await state.clear()
             return
-        
+
         moderator = Moderator(tg_user_id=mod_id, is_active=True)
         session.add(moderator)
         session.commit()
-        
         logger.info(f"✅ Модератор {mod_id} добавлен")
         await msg.answer(f"✅ Пользователь {mod_id} добавлен как модератор!", reply_markup=get_main_keyboard())
     except Exception as e:
@@ -406,7 +440,8 @@ async def add_mod_process(msg: Message, state: FSMContext):
         session.rollback()
     finally:
         session.close()
-        await state.clear()
+
+    await state.clear()
 
 @dp.message(F.text == "📊 Статус")
 async def status(msg: Message):
@@ -414,17 +449,16 @@ async def status(msg: Message):
     try:
         redis_ping = redis_client.ping()
         redis_status = "✅ OK" if redis_ping else "❌ ERROR"
-        
         session = Session()
         try:
             chats_count = session.query(Chat).filter_by(is_active=True).count()
             mods_count = session.query(Moderator).filter_by(is_active=True).count()
         finally:
             session.close()
-        
+
         q2_len = redis_client.llen(QUEUE_AGENT_2_INPUT)
         q6_len = redis_client.llen(QUEUE_AGENT_6_INPUT)
-        
+
         text = f"""📊 *СТАТУС СИСТЕМЫ*
 
 🤖 *Компоненты:*
@@ -437,7 +471,7 @@ Agent 2: {q2_len} сообщений
 Agent 6: {q6_len} фото
 
 🕐 {datetime.now().strftime('%H:%M:%S')}"""
-        
+
         await msg.answer(text, reply_markup=get_status_inline(), parse_mode="Markdown")
     except Exception as e:
         logger.error(f"❌ Ошибка статуса: {e}")
@@ -449,7 +483,6 @@ async def help_cmd(msg: Message):
     text = """ℹ️ *СПРАВКА*
 
 📋 *Команды меню:*
-
 • Регистрация чата - зарегистрировать чат
 • Список модераторов - показать модераторов
 • Добавить модератора - добавить нового модератора
@@ -460,7 +493,7 @@ async def help_cmd(msg: Message):
 
 📸 *Проверка:*
 Текст + Фото анализируются автоматически"""
-    
+
     await msg.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
 
 # ============================================================================
@@ -473,9 +506,9 @@ async def handle_text(msg: Message):
     try:
         if msg.chat.type == "private":
             return
-        
+
         logger.info(f"📨 Сообщение от @{msg.from_user.username or msg.from_user.id}: '{msg.text[:50]}'")
-        
+
         data = {
             "message": msg.text,
             "username": msg.from_user.username or "unknown",
@@ -486,7 +519,7 @@ async def handle_text(msg: Message):
             "message_link": f"https://t.me/c/{str(msg.chat.id)[4:]}/{msg.message_id}",
             "media_type": ""
         }
-        
+
         redis_client.rpush(QUEUE_AGENT_2_INPUT, json.dumps(data, ensure_ascii=False))
         logger.info(f"📤 Сообщение отправлено в очередь агента 2")
     except Exception as e:
@@ -498,13 +531,12 @@ async def handle_photo(msg: Message):
     try:
         photo = msg.photo[-1]
         logger.info(f"📸 ФОТО: {photo.file_id}")
-        
         file_name = f"photo_{msg.from_user.id}_{msg.message_id}.jpg"
         local_path = await download_file(photo.file_id, file_name)
-        
+
         if not local_path:
             return
-        
+
         data = {
             "media_type": "photo",
             "local_path": local_path,
@@ -516,7 +548,7 @@ async def handle_photo(msg: Message):
             "timestamp": datetime.now().isoformat(),
             "message_link": f"https://t.me/c/{str(msg.chat.id)[4:]}/{msg.message_id}"
         }
-        
+
         redis_client.rpush(QUEUE_AGENT_6_INPUT, json.dumps(data, ensure_ascii=False))
         logger.info(f"📤 ФОТО отправлено АГЕНТУ 6")
     except Exception as e:
@@ -535,17 +567,17 @@ async def photos_list(query):
         if not os.path.exists(DOWNLOADS_DIR):
             await query.answer("📁 Нет фото")
             return
-        
+
         files = os.listdir(DOWNLOADS_DIR)
         if not files:
             await query.answer("📁 Папка пуста")
             return
-        
+
         text = f"📁 *Скачано {len(files)} фото:*\n\n"
         for f in files[:10]:
             size = os.path.getsize(os.path.join(DOWNLOADS_DIR, f)) / 1024
             text += f"• {f} ({size:.1f}KB)\n"
-        
+
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=get_status_inline())
     except Exception as e:
         logger.error(f"❌ Ошибка списка: {e}")
@@ -561,46 +593,59 @@ async def redis_stats(query):
 💾 Memory: {info['used_memory_human']}
 📊 Clients: {info['connected_clients']}
 📈 Keys: {redis_client.dbsize()}"""
-        
+
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=get_status_inline())
     except Exception as e:
         logger.error(f"❌ Ошибка Redis: {e}")
         await query.answer(f"❌ {e}")
 
 # ============================================================================
-# RESULT READER
+# RESULT READER - ИСПРАВЛЕННАЯ ВЕРСИЯ
 # ============================================================================
 
 async def result_reader():
-    """Читает результаты и уведомляет"""
-    logger.info("📥 READER: Слушаю результаты")
+    """Читает результаты и уведомляет модераторов - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    logger.info("📥 READER: Слушаю результаты модерации")
+
     while True:
         try:
-            # ✅ Читаем из QUEUE_AGENT_2_OUTPUT (от агента 2)
+            # ✅ ЧАСТЬ 1: Читаем результаты от АГЕНТА 2 (текст)
             result = redis_client.blpop(QUEUE_AGENT_2_OUTPUT, timeout=0.5)
             if result:
                 _, data = result
                 try:
                     j = json.loads(data)
-                    logger.info(f"📨 Результат от Агента 2: action={j.get('action')}, severity={j.get('severity')}")
+                    logger.info(
+                        f"📨 Результат от Агента 2: "
+                        f"user=@{j.get('username')}, "
+                        f"action={j.get('action')}, "
+                        f"severity={j.get('severity')}/10"
+                    )
                     await notify_mods(j.get("chat_id"), j)
                 except Exception as e:
-                    logger.error(f"❌ Ошибка обработки результата: {e}")
-            
-            # ✅ Читаем из QUEUE_AGENT_6_OUTPUT (от агента 6)
+                    logger.error(f"❌ Ошибка обработки результата Агента 2: {e}")
+
+            # ✅ ЧАСТЬ 2: Читаем результаты от АГЕНТА 6 (ФОТО) - ДОБАВЛЕНО!
             result = redis_client.blpop(QUEUE_AGENT_6_OUTPUT, timeout=0.5)
             if result:
                 _, data = result
                 try:
                     j = json.loads(data)
-                    logger.info(f"📨 Результат от Агента 6: action={j.get('action')}, severity={j.get('severity')}")
+                    logger.info(
+                        f"📨 Результат от Агента 6 (ФОТО): "
+                        f"user=@{j.get('username')}, "
+                        f"action={j.get('action')}, "
+                        f"severity={j.get('severity')}/10, "
+                        f"media_type={j.get('media_type')}"
+                    )
                     await notify_mods(j.get("chat_id"), j)
                 except Exception as e:
-                    logger.error(f"❌ Ошибка обработки результата: {e}")
-            
+                    logger.error(f"❌ Ошибка обработки результата Агента 6: {e}")
+
             await asyncio.sleep(0.1)
+
         except Exception as e:
-            logger.error(f"❌ Reader: {e}")
+            logger.error(f"❌ Reader error: {e}")
             await asyncio.sleep(1)
 
 # ============================================================================
