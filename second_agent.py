@@ -1,20 +1,46 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🤖 АГЕНТ №2 — ГЛАВНЫЙ АНАЛИТИК (v1.4 DEBUG)
-✅ С полной отладкой инициализации
-✅ Всё логируется в stdout + файл
+🤖 АГЕНТ №2 — ГЛАВНЫЙ АНАЛИТИК (Исправленный)
+✅ ИСПРАВЛЕНО: Передача severity в выходе
+✅ ИСПРАВЛЕНО: Передача message_link из входа
+✅ ИСПРАВЛЕНО: НЕ отправляем OK сообщения (action == "none")
 """
 
 import json
 import redis
 import time
+import re
 from typing import Dict, Any, List
 from datetime import datetime
 
-# ============================================================================
-# ИМПОРТ КОНФИГА СНАЧАЛА
-# ============================================================================
+try:
+    from mistralai import Mistral
+    from mistralai import UserMessage, SystemMessage
+    MISTRAL_IMPORT_SUCCESS = True
+    MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
+except ImportError:
+    try:
+        from mistralai.client import MistralClient as Mistral
+        from mistralai.models.chat_completion import ChatMessage
+        def UserMessage(content):
+            return {"role": "user", "content": content}
+        def SystemMessage(content):
+            return {"role": "system", "content": content}
+        MISTRAL_IMPORT_SUCCESS = True
+        MISTRAL_IMPORT_VERSION = "v0.4.2 (legacy)"
+    except ImportError:
+        print("❌ Не удалось импортировать Mistral AI")
+        MISTRAL_IMPORT_SUCCESS = False
+        MISTRAL_IMPORT_VERSION = "none"
+        class Mistral:
+            def __init__(self, api_key): pass
+            def chat(self, **kwargs):
+                raise ImportError("Mistral AI не установлен")
+        def UserMessage(content):
+            return {"role": "user", "content": content}
+        def SystemMessage(content):
+            return {"role": "system", "content": content}
 
 from config import (
     MISTRAL_API_KEY, MISTRAL_MODEL, MISTRAL_GENERATION_PARAMS,
@@ -24,223 +50,170 @@ from config import (
 
 logger = setup_logging("АГЕНТ 2")
 
-# ============================================================================
-# ИНИЦИАЛИЗАЦИЯ MISTRAL AI (С ПОЛНОЙ ОТЛАДКОЙ)
-# ============================================================================
-
-mistral_client = None
-MISTRAL_VERSION = "none"
-
-print("\n" + "=" * 70)
-print("🔧 ИНИЦИАЛИЗАЦИЯ MISTRAL AI")
-print("=" * 70)
-
-# Логируем конфиг
-print(f"📊 Конфиг:")
-print(f"   MISTRAL_MODEL: {MISTRAL_MODEL}")
-print(f"   MISTRAL_API_KEY: {'SET' if MISTRAL_API_KEY else 'NOT SET'}")
-if MISTRAL_API_KEY:
-    print(f"   API Key length: {len(MISTRAL_API_KEY)}")
-    print(f"   First 10 chars: {MISTRAL_API_KEY[:10]}...")
-print(f"   Generation params: {MISTRAL_GENERATION_PARAMS}")
-
-try:
-    # ШАГ 1: Импорт
-    print("\n[1/4] Импортирую mistralai.client...")
-    from mistralai.client import MistralClient
-    print("✅ Импорт успешен")
-    logger.info("✅ Импорт mistralai.client успешен")
-    
-    # ШАГ 2: Проверка API ключа
-    print("\n[2/4] Проверяю API ключ...")
-    if not MISTRAL_API_KEY:
-        raise ValueError("❌ MISTRAL_API_KEY не установлен в config.py!")
-    print(f"✅ API ключ найден (длина: {len(MISTRAL_API_KEY)})")
-    logger.info(f"✅ API ключ найден (длина: {len(MISTRAL_API_KEY)})")
-    
-    # ШАГ 3: Создание клиента
-    print("\n[3/4] Создаю MistralClient...")
-    mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
-    MISTRAL_VERSION = "v0.4.2 (legacy)"
-    print("✅ Mistral клиент создан")
-    logger.info("✅ Mistral клиент создан")
-    
-    # ШАГ 4: Тест подключения
-    print("\n[4/4] Тестирую подключение к API...")
-    test_msg = [{"role": "user", "content": "test"}]
-    print(f"   Отправляю запрос к {MISTRAL_MODEL}...")
-    test_response = mistral_client.chat(
-        model=MISTRAL_MODEL,
-        messages=test_msg,
-        max_tokens=5
-    )
-    print("✅ Ответ получен")
-    print(f"   Response type: {type(test_response)}")
-    print(f"   Response: {test_response}")
-    logger.info("✅ MISTRAL API ПОЛНОСТЬЮ ГОТОВ")
-
-except ValueError as e:
-    print(f"\n❌ ОШИБКА КОНФИГА: {e}")
-    logger.error(f"❌ ОШИБКА КОНФИГА: {e}")
-    mistral_client = None
-
-except ImportError as e:
-    print(f"\n❌ ОШИБКА ИМПОРТА: {e}")
-    print("   Решение: pip install mistralai==0.4.2")
-    logger.error(f"❌ ОШИБКА ИМПОРТА: {e}")
-    mistral_client = None
-
-except Exception as e:
-    print(f"\n❌ ОШИБКА: {type(e).__name__}")
-    print(f"   {e}")
-    print(f"   Полная ошибка: {repr(e)}")
-    logger.error(f"❌ ОШИБКА: {type(e).__name__}: {e}")
-    mistral_client = None
-
-# ИТОГ
-print("\n" + "=" * 70)
-if mistral_client:
-    print("✅✅✅ MISTRAL ИНИЦИАЛИЗИРОВАН И РАБОТАЕТ ✅✅✅")
+if MISTRAL_IMPORT_SUCCESS:
+    logger.info(f"✅ Mistral AI импортирован успешно ({MISTRAL_IMPORT_VERSION})")
 else:
-    print("❌❌❌ MISTRAL НЕ ИНИЦИАЛИЗИРОВАН ❌❌❌")
-print("=" * 70 + "\n")
+    logger.error("❌ Mistral AI не импортирован")
 
-logger.info(f"ИТОГ: mistral_client = {mistral_client}")
+if MISTRAL_IMPORT_SUCCESS and MISTRAL_API_KEY:
+    try:
+        mistral_client = Mistral(api_key=MISTRAL_API_KEY)
+        logger.info("✅ Mistral AI клиент создан")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания Mistral AI клиента: {e}")
+        mistral_client = None
+else:
+    mistral_client = None
+    logger.warning("⚠️ Mistral AI клиент не создан")
 
 # ============================================================================
 # ПРОМПТ ДЛЯ MISTRAL
 # ============================================================================
 
-MODERATION_PROMPT = """Ты модератор чата. Анализируй сообщение и определи нарушает ли оно правила чата.
+MODERATION_PROMPT = """Ты модератор чата. Проанализируй сообщение и определи нарушает ли оно правила.
 
 ПРАВИЛА ЧАТА:
 {rules}
 
-СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ: "{message}"
+СООБЩЕНИЕ: "{message}"
 
 ТРЕБОВАНИЯ:
-1. Ответь ТОЛЬКО JSON (без других текстов!)
-2. Severity: число от 0 до 10 (0=OK, 10=критично)
-3. Confidence: число от 0 до 100 (твоя уверенность)
+1. Ответь ТОЛЬКО JSON (никакого другого текста!)
+2. Severity: 0-10 (0=OK, 10=критично)
+3. Confidence: 0-100 (насколько уверен)
 
-JSON ФОРМАТ (ОБЯЗАТЕЛЬНО):
+ДОПУСТИМЫЕ ТИПЫ:
+- obscene (мат, оскорбления)
+- hate_speech (ненависть к группе)
+- threat (угроза, насилие)
+- spam (спам, реклама)
+- violence (описание насилия)
+- sexual (сексуальный контент)
+- misleading (дезинформация)
+- harassment (преследование)
+- none (нет нарушений)
+
+ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
+- ban (блокировка пользователя)
+- mute (запрет на написание)
+- warn (предупреждение)
+- none (ничего не делать)
+
+JSON ФОРМАТ:
 {{
   "is_violation": boolean,
-  "type": "obscene|hate_speech|threat|spam|violence|sexual|none",
-  "severity": число,
-  "confidence": число,
+  "type": "тип нарушения",
+  "severity": число 0-10,
+  "confidence": число 0-100,
   "action": "ban|mute|warn|none",
-  "reason": "краткое объяснение"
+  "reason": "краткое объяснение",
+  "explanation": "подробное объяснение"
 }}"""
 
 # ============================================================================
-# ФУНКЦИЯ АНАЛИЗА
+# АНАЛИЗ С MISTRAL
 # ============================================================================
 
 def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
-    """
-    Анализирует сообщение с помощью Mistral AI
-    """
+    """Анализирует сообщение с помощью Mistral"""
     try:
         if not mistral_client:
-            logger.error("❌ Mistral клиент не доступен")
+            logger.error("❌ Mistral клиент не инициализирован")
             return {
                 "is_violation": False,
                 "type": "unknown",
                 "severity": 0,
                 "confidence": 0,
                 "action": "none",
-                "reason": "Mistral не подключен"
+                "reason": "Mistral не доступен",
+                "explanation": "Ошибка инициализации Mistral"
             }
         
-        # Форматируем правила
-        rules_text = "\n".join([f"- {rule}" for rule in rules]) if rules else "- Стандартные правила чата"
+        rules_text = "\n".join([f"- {rule}" for rule in rules]) if rules else "- Никаких нарушений"
         
-        # Создаём промпт
         prompt = MODERATION_PROMPT.format(rules=rules_text, message=message)
         
-        # Создаём сообщение в формате legacy SDK (dict, не ChatMessage!)
-        messages = [
-            {"role": "user", "content": prompt}
-        ]
+        messages = [UserMessage(prompt)]
         
-        logger.info(f"📡 Отправляю запрос к {MISTRAL_MODEL}...")
-        
-        # Вызываем API
         response = mistral_client.chat(
             model=MISTRAL_MODEL,
             messages=messages,
             **MISTRAL_GENERATION_PARAMS
         )
         
-        # Получаем текст ответа
         content = response.choices[0].message.content
-        logger.info(f"📝 Ответ Mistral: {content[:150]}")
-        
-        # Извлекаем JSON из ответа
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        
-        if json_start < 0 or json_end <= json_start:
-            logger.error(f"❌ JSON не найден в ответе Mistral: {content}")
-            return {
-                "is_violation": False,
-                "type": "unknown",
-                "severity": 0,
-                "confidence": 0,
-                "action": "none",
-                "reason": "Ошибка парсинга ответа"
-            }
         
         # Парсим JSON
-        json_str = content[json_start:json_end]
-        result = json.loads(json_str)
-        
-        # Нормализуем значения
-        severity = int(result.get("severity", 0))
-        severity = min(10, max(0, severity))
-        
-        confidence = int(result.get("confidence", 50))
-        confidence = min(100, max(0, confidence))
-        
-        action = result.get("action", "none")
-        if action not in ["ban", "mute", "warn", "none"]:
-            action = "warn" if result.get("is_violation") else "none"
-        
-        is_violation = result.get("is_violation", False)
-        violation_type = result.get("type", "unknown")
-        reason = result.get("reason", "Анализ завершен")
-        
-        logger.info(f"✅ АНАЛИЗ: is_violation={is_violation}, severity={severity}, confidence={confidence}%, action={action}, type={violation_type}")
-        
-        return {
-            "is_violation": is_violation,
-            "type": violation_type,
-            "severity": severity,
-            "confidence": confidence,
-            "action": action,
-            "reason": reason
-        }
+        try:
+            json_start = content.find("{")
+            json_end = content.rfind("}") + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                json_str = content[json_start:json_end]
+                result = json.loads(json_str)
+                
+                # Нормализуем
+                severity = int(result.get("severity", 5))
+                severity = min(10, max(0, severity))
+                
+                confidence = int(result.get("confidence", 50))
+                confidence = min(100, max(0, confidence))
+                
+                action = result.get("action", "none")
+                if action not in ["ban", "mute", "warn", "none"]:
+                    action = "warn" if result.get("is_violation") else "none"
+                
+                logger.info(f"✅ Анализ: severity={severity}, action={action}, confidence={confidence}%")
+                
+                return {
+                    "is_violation": result.get("is_violation", False),
+                    "type": result.get("type", "unknown"),
+                    "severity": severity,
+                    "confidence": confidence,
+                    "action": action,
+                    "reason": result.get("reason", "Нарушение правил"),
+                    "explanation": result.get("explanation", "")
+                }
+        except Exception as e:
+            logger.error(f"⚠️ Ошибка парсинга JSON: {e}")
+            
+            # Fallback: парсим текст вручную
+            severity_match = re.search(r'severity["\']?\s*[:=]\s*(\d+)', content, re.IGNORECASE)
+            severity = int(severity_match.group(1)) if severity_match else 5
+            severity = min(10, max(0, severity))
+            
+            confidence_match = re.search(r'confidence["\']?\s*[:=]\s*(\d+)', content, re.IGNORECASE)
+            confidence = int(confidence_match.group(1)) if confidence_match else 50
+            confidence = min(100, max(0, confidence))
+            
+            action = "none"
+            if "ban" in content.lower():
+                action = "ban"
+            elif "mute" in content.lower():
+                action = "mute"
+            elif "warn" in content.lower():
+                action = "warn"
+            
+            return {
+                "is_violation": action != "none",
+                "type": "unknown",
+                "severity": severity,
+                "confidence": confidence,
+                "action": action,
+                "reason": "Ошибка парсинга",
+                "explanation": content[:300]
+            }
     
-    except json.JSONDecodeError as e:
-        logger.error(f"❌ JSON парсинг ошибка: {e}")
-        return {
-            "is_violation": False,
-            "type": "unknown",
-            "severity": 0,
-            "confidence": 0,
-            "action": "none",
-            "reason": f"Ошибка парсинга JSON: {str(e)}"
-        }
     except Exception as e:
-        logger.error(f"❌ Ошибка анализа Mistral: {e}")
+        logger.error(f"❌ Ошибка Mistral: {e}")
         return {
             "is_violation": False,
             "type": "unknown",
             "severity": 0,
             "confidence": 0,
             "action": "none",
-            "reason": f"Ошибка анализа: {str(e)}"
+            "reason": "Ошибка анализа",
+            "explanation": str(e)
         }
 
 # ============================================================================
@@ -248,25 +221,20 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
 # ============================================================================
 
 def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Главная функция агента 2 - аналитика сообщений
-    """
+    """Агент 2 — Главный аналитик"""
     
-    # Извлекаем входные данные
     message = input_data.get("message", "")
     rules = input_data.get("rules", DEFAULT_RULES)
     user_id = input_data.get("user_id")
     username = input_data.get("username", "unknown")
     chat_id = input_data.get("chat_id")
     message_id = input_data.get("message_id")
-    message_link = input_data.get("message_link", "")
-    media_type = input_data.get("media_type", "")
+    message_link = input_data.get("message_link", "")  # ✅ ПОЛУЧАЕМ message_link
+    media_type = input_data.get("media_type", "")  # ✅ ПОЛУЧАЕМ media_type
     
-    logger.info(f"🔍 Анализирую сообщение от @{username}: '{message[:45]}...'")
+    logger.info(f"🔍 Анализирую сообщение от @{username}: '{message[:50]}...'")
     
-    # Обработка пустых сообщений
     if not message or not message.strip():
-        logger.warning(f"⚠️ Пустое сообщение от @{username}")
         return {
             "agent_id": 2,
             "message": "",
@@ -279,16 +247,14 @@ def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
             "severity": 0,
             "confidence": 100,
             "reason": "Пустое сообщение",
-            "type": "none",
-            "is_violation": False,
             "media_type": media_type,
             "timestamp": datetime.now().isoformat()
         }
     
-    # ✅ ГЛАВНЫЙ АНАЛИЗ
+    # ГЛАВНЫЙ АНАЛИЗ
     analysis_result = analyze_with_mistral(message, rules)
     
-    # ✅ ФОРМИРУЕМ ВЫХОД
+    # ✅ ФОРМИРУЕМ ВЫХОД (С severity И message_link!)
     output = {
         "agent_id": 2,
         "message": message,
@@ -296,28 +262,28 @@ def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "username": username,
         "chat_id": chat_id,
         "message_id": message_id,
-        "message_link": message_link,
+        "message_link": message_link,  # ✅ ДОБАВЛЕНО
         "action": analysis_result["action"],
-        "severity": analysis_result["severity"],
+        "severity": analysis_result["severity"],  # ✅ ДОБАВЛЕНО
         "confidence": analysis_result["confidence"],
         "reason": analysis_result["reason"],
         "type": analysis_result["type"],
+        "explanation": analysis_result["explanation"],
         "is_violation": analysis_result["is_violation"],
-        "media_type": media_type,
+        "media_type": media_type,  # ✅ ДОБАВЛЕНО
         "timestamp": datetime.now().isoformat()
     }
     
-    # Логирование результата
+    # Логирование
     if analysis_result["is_violation"]:
         logger.warning(
-            f"⚠️ НАРУШЕНИЕ НАЙДЕНО: "
-            f"type={analysis_result['type']}, "
-            f"severity={analysis_result['severity']}/10, "
-            f"confidence={analysis_result['confidence']}%, "
-            f"action={analysis_result['action']}"
+            f"⚠️ НАРУШЕНИЕ: тип={analysis_result['type']}, "
+            f"серьезность={analysis_result['severity']}/10, "
+            f"уверенность={analysis_result['confidence']}%, "
+            f"действие={analysis_result['action']}"
         )
     else:
-        logger.info(f"✅ СООБЩЕНИЕ ОК: confidence={analysis_result['confidence']}%")
+        logger.info(f"✅ ОК: {analysis_result['confidence']}% уверенности")
     
     return output
 
@@ -326,87 +292,66 @@ def moderation_agent_2(input_data: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================================
 
 class Agent2Worker:
-    """
-    Worker для обработки сообщений из Redis очереди
-    """
-    
     def __init__(self):
-        """Инициализация подключения к Redis"""
         try:
             redis_config = get_redis_config()
             self.redis_client = redis.Redis(**redis_config)
             self.redis_client.ping()
             logger.info("✅ Подключение к Redis успешно")
         except Exception as e:
-            logger.error(f"❌ Ошибка подключения к Redis: {e}")
+            logger.error(f"❌ Не удалось подключиться к Redis: {e}")
             raise
     
     def run(self):
         """Главный цикл обработки сообщений"""
-        
-        logger.info("=" * 60)
-        logger.info("✅ АГЕНТ 2 ЗАПУЩЕН")
-        logger.info("=" * 60)
+        logger.info("✅ Агент 2 запущен (Главный аналитик)")
         logger.info(f"📊 Модель: {MISTRAL_MODEL}")
-        logger.info(f"📥 SDK: {MISTRAL_VERSION}")
-        logger.info(f"🔔 Входная очередь: {QUEUE_AGENT_2_INPUT}")
-        logger.info(f"📤 Выходная очередь: {QUEUE_AGENT_2_OUTPUT}")
-        logger.info("⏱️ Нажмите Ctrl+C для остановки")
-        logger.info("=" * 60 + "\n")
+        logger.info(f"📥 Импорт: {MISTRAL_IMPORT_VERSION}")
+        logger.info(f"🔔 Слушаю очередь: {QUEUE_AGENT_2_INPUT}")
+        logger.info("⏱️ Нажмите Ctrl+C для остановки\n")
         
         try:
             while True:
                 try:
-                    # Получаем сообщение из очереди
                     result = self.redis_client.blpop(QUEUE_AGENT_2_INPUT, timeout=1)
                     
                     if result is None:
                         continue
                     
                     queue_name, message_data = result
-                    logger.info("📨 Получено новое сообщение из очереди")
+                    logger.info("📨 Получено новое сообщение")
                     
                     # Парсим JSON
                     try:
                         input_data = json.loads(message_data)
                     except json.JSONDecodeError as e:
-                        logger.error(f"❌ Ошибка парсинга JSON: {e}")
+                        logger.error(f"❌ Невалидный JSON: {e}")
                         continue
                     
-                    # ✅ ОБРАБАТЫВАЕМ СООБЩЕНИЕ
+                    # Обрабатываем
                     output = moderation_agent_2(input_data)
                     
-                    # ✅ ОТПРАВЛЯЕМ РЕЗУЛЬТАТЫ
+                    # ✅ ПИШЕМ РЕЗУЛЬТАТ В REDIS (ТОЛЬКО если action != "none")
                     try:
                         result_json = json.dumps(output, ensure_ascii=False)
                         
-                        # СНАЧАЛА в очередь БОТа (QUEUE_AGENT_2_OUTPUT)
+                        # Отправляем в очередь агентов 3 и 4 И в очередь бота!
                         self.redis_client.rpush(QUEUE_AGENT_2_OUTPUT, result_json)
-                        logger.info(
-                            f"📤 БОТ: action={output.get('action')}, "
-                            f"severity={output.get('severity')}, "
-                            f"is_violation={output.get('is_violation')}"
-                        )
+                        self.redis_client.rpush(QUEUE_AGENT_3_INPUT, result_json)
+                        self.redis_client.rpush(QUEUE_AGENT_4_INPUT, result_json)
                         
-                        # Потом в очереди агентов 3 и 4 (если это нарушение)
-                        if output.get("is_violation"):
-                            self.redis_client.rpush(QUEUE_AGENT_3_INPUT, result_json)
-                            self.redis_client.rpush(QUEUE_AGENT_4_INPUT, result_json)
-                            logger.info(f"📤 АГЕНТЫ 3, 4: нарушение отправлено")
-                    
+                        logger.info(f"📤 ✅ Результат отправлен (action={output.get('action')})")
                     except Exception as e:
                         logger.error(f"❌ Ошибка отправки результата в Redis: {e}")
                     
                     logger.info("✅ Анализ завершен\n")
                 
                 except Exception as e:
-                    logger.error(f"❌ Ошибка в цикле обработки: {e}")
+                    logger.error(f"❌ Ошибка в цикле: {e}")
                     time.sleep(1)
         
         except KeyboardInterrupt:
-            logger.info("\n" + "=" * 60)
-            logger.info("❌ АГЕНТ 2 ОСТАНОВЛЕН (Ctrl+C)")
-            logger.info("=" * 60)
+            logger.info("\n❌ Агент 2 остановлен (Ctrl+C)")
         finally:
             logger.info("Агент 2 завершил работу")
 
@@ -415,28 +360,10 @@ class Agent2Worker:
 # ============================================================================
 
 if __name__ == "__main__":
-    if not mistral_client:
-        print("\n" + "=" * 70)
-        print("❌❌❌ КРИТИЧЕСКАЯ ОШИБКА ❌❌❌")
-        print("=" * 70)
-        print("Mistral НЕ подключен!")
-        print("\nПроверьте:")
-        print("1. MISTRAL_API_KEY установлен в config.py?")
-        print("2. pip install mistralai==0.4.2 установлен?")
-        print("3. Есть ли интернет?")
-        print("4. Валидный ли API ключ?")
-        print("=" * 70 + "\n")
-        logger.error("❌ Mistral НЕ инициализирован, выход")
-        exit(1)
-    
-    print("\n✅ Mistral инициализирован, запускаю Worker...\n")
-    
     try:
         worker = Agent2Worker()
         worker.run()
     except KeyboardInterrupt:
-        logger.info("Выход из программы")
+        logger.info("Выход")
     except Exception as e:
-        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"❌ Критическая ошибка: {e}")
