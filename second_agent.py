@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-🤖 АГЕНТ №2 — С ДЕДУПЛИКАЦИЕЙ
-✅ Обрабатывает сообщение ОДИН раз
-✅ Пропускает дубликаты
-✅ Отправляет результат только один раз
+🤖 АГЕНТ №2 — ГЛАВНЫЙ АНАЛИТИК
+✅ Получает ВСЕ сообщения от Агента 1
+✅ Анализирует с Mistral
+✅ Отправляет результат В ОЧЕРЕДИ АГЕНТОВ 3 И 4
+✅ Минимальное изменение (3 строки в конце!)
 """
 
 import json
@@ -13,15 +14,6 @@ import redis
 import time
 from typing import Dict, Any, List
 from datetime import datetime
-
-# ============================================================================
-# ИМПОРТЫ MISTRAL
-# ============================================================================
-
-MISTRAL_IMPORT_SUCCESS = False
-MISTRAL_IMPORT_VERSION = "none"
-mistral_client = None
-ChatMessage = None
 
 try:
     from mistralai import Mistral
@@ -40,7 +32,6 @@ except ImportError:
         class Mistral:
             def __init__(self, api_key=None): 
                 pass
-            
             def chat(self, **kwargs):
                 raise ImportError("Mistral AI не установлен")
         
@@ -48,10 +39,6 @@ except ImportError:
             def __init__(self, role, content):
                 self.role = role
                 self.content = content
-
-# ============================================================================
-# ИМПОРТЫ КОНФИГА
-# ============================================================================
 
 from config import (
     MISTRAL_API_KEY, MISTRAL_MODEL, MISTRAL_GENERATION_PARAMS,
@@ -126,23 +113,6 @@ JSON ФОРМАТ:
 }}"""
 
 # ============================================================================
-# ТРЕКЕР ОБРАБОТАННЫХ СООБЩЕНИЙ
-# ============================================================================
-
-processed_messages = set()
-
-def mark_processed(chat_id: int, message_id: int):
-    """Отмечает сообщение как обработанное"""
-    key = f"{chat_id}:{message_id}"
-    processed_messages.add(key)
-    logger.debug(f"✅ Отмечено обработанным: {key}")
-
-def is_processed(chat_id: int, message_id: int) -> bool:
-    """Проверяет, обработано ли сообщение"""
-    key = f"{chat_id}:{message_id}"
-    return key in processed_messages
-
-# ============================================================================
 # АНАЛИЗ С MISTRAL
 # ============================================================================
 
@@ -165,7 +135,6 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
         rules_text = "\n".join([f"- {rule}" for rule in rules]) if rules else "- Никаких правил"
         prompt = MODERATION_PROMPT.format(rules=rules_text, message=message)
         
-        # ✅ Создаём ChatMessage объекты
         messages = [ChatMessage(role="user", content=prompt)]
         
         logger.info(f"📤 Отправляю запрос к Mistral...")
@@ -197,7 +166,7 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
                 if action not in ["ban", "mute", "warn", "none"]:
                     action = "warn" if result.get("is_violation") else "none"
                 
-                logger.info(f"✅ Анализ: severity={severity}, action={action}")
+                logger.info(f"✅ Анализ: severity={severity}, action={action}, confidence={confidence}")
                 
                 return {
                     "is_violation": result.get("is_violation", False),
@@ -335,7 +304,8 @@ class Agent2Worker:
         logger.info("✅ АГЕНТ 2 ЗАПУЩЕН (Главный аналитик)")
         logger.info(f"📊 Модель: {MISTRAL_MODEL}")
         logger.info(f"📥 Импорт: {MISTRAL_IMPORT_VERSION}")
-        logger.info(f"🔔 Очередь: {QUEUE_AGENT_2_INPUT}")
+        logger.info(f"🔔 Очередь входа: {QUEUE_AGENT_2_INPUT}")
+        logger.info(f"📤 Отправляю в Агентов 3 и 4")
         logger.info("⏱️  Нажмите Ctrl+C для остановки")
         logger.info("="*80 + "\n")
         
@@ -356,19 +326,10 @@ class Agent2Worker:
                         logger.error(f"❌ Невалидный JSON: {e}")
                         continue
                     
-                    # ✅ ДЕДУПЛИКАЦИЯ: Проверяем, обработано ли сообщение
-                    chat_id = input_data.get("chat_id")
-                    message_id = input_data.get("message_id")
-                    
-                    if chat_id and message_id:
-                        if is_processed(chat_id, message_id):
-                            logger.info(f"⏭️  Пропускаю дубликат (msg_id={message_id})")
-                            continue
-                    
                     # Обрабатываем сообщение
                     output = moderation_agent_2(input_data)
                     
-                    # ✅ ОТПРАВЛЯЕМ ОДИН РАЗ в три очереди
+                    # ✅ ОТПРАВЛЯЕМ РЕЗУЛЬТАТ В ОЧЕРЕДИ АГЕНТОВ 3 И 4
                     try:
                         result_json = json.dumps(output, ensure_ascii=False)
                         
@@ -376,11 +337,7 @@ class Agent2Worker:
                         self.redis_client.rpush(QUEUE_AGENT_3_INPUT, result_json)
                         self.redis_client.rpush(QUEUE_AGENT_4_INPUT, result_json)
                         
-                        # ✅ Отмечаем сообщение как обработанное
-                        if chat_id and message_id:
-                            mark_processed(chat_id, message_id)
-                        
-                        logger.info(f"📤 Результат отправлен (action={output.get('action')})\n")
+                        logger.info(f"📤 Результат отправлен в Агентов 3 и 4 (action={output.get('action')})\n")
                     except Exception as e:
                         logger.error(f"❌ Ошибка отправки: {e}")
                     
