@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-🤖 АГЕНТ №2 — ФИНАЛЬНЫЙ РАБОЧИЙ КОД
-✅ БЕЗ ChatMessage импорта
-✅ ТОЛЬКО dict для сообщений
+🤖 АГЕНТ №2 — ФИНАЛЬНЫЙ КОД С CHATMESSAGE ОБЁРТКОЙ
+✅ Создаём ChatMessage объекты из dict'ов перед отправкой
 ✅ РАБОТАЕТ с mistralai 0.0.11
 """
 
@@ -16,28 +15,23 @@ from typing import Dict, Any, List
 from datetime import datetime
 
 # ============================================================================
-# ИМПОРТЫ MISTRAL - ФИНАЛЬНАЯ ВЕРСИЯ БЕЗ ChatMessage
+# ИМПОРТЫ MISTRAL
 # ============================================================================
 
 MISTRAL_IMPORT_SUCCESS = False
 MISTRAL_IMPORT_VERSION = "none"
 mistral_client = None
+ChatMessage = None
 
 try:
     from mistralai import Mistral
-    from mistralai import UserMessage, SystemMessage
+    from mistralai.models.chat_completion import ChatMessage
     MISTRAL_IMPORT_SUCCESS = True
     MISTRAL_IMPORT_VERSION = "v1.0+ (новый SDK)"
 except ImportError:
     try:
         from mistralai.client import MistralClient as Mistral
-        
-        def UserMessage(content):
-            return {"role": "user", "content": content}
-        
-        def SystemMessage(content):
-            return {"role": "system", "content": content}
-        
+        from mistralai.models.chat_completion import ChatMessage
         MISTRAL_IMPORT_SUCCESS = True
         MISTRAL_IMPORT_VERSION = "v0.0.11 (legacy)"
     except Exception as e:
@@ -50,11 +44,10 @@ except ImportError:
             def chat(self, **kwargs):
                 raise ImportError("Mistral AI не установлен")
         
-        def UserMessage(content):
-            return {"role": "user", "content": content}
-        
-        def SystemMessage(content):
-            return {"role": "system", "content": content}
+        class ChatMessage:
+            def __init__(self, role, content):
+                self.role = role
+                self.content = content
 
 # ============================================================================
 # ИМПОРТЫ КОНФИГА
@@ -70,6 +63,7 @@ logger = setup_logging("АГЕНТ 2")
 
 if MISTRAL_IMPORT_SUCCESS:
     logger.info(f"✅ Mistral AI импортирован ({MISTRAL_IMPORT_VERSION})")
+    logger.info(f"✅ ChatMessage класс импортирован")
 else:
     logger.error("❌ Mistral AI не импортирован")
 
@@ -89,7 +83,7 @@ else:
     logger.warning("⚠️ Mistral AI клиент не создан")
 
 # ============================================================================
-# ПРОМПТ ДЛЯ MISTRAL - ПРАВИЛЬНЫЕ СКОБКИ
+# ПРОМПТ ДЛЯ MISTRAL
 # ============================================================================
 
 MODERATION_PROMPT = """Ты модератор чата. Проанализируй сообщение и определи нарушает ли оно правила.
@@ -155,7 +149,10 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
         rules_text = "\n".join([f"- {rule}" for rule in rules]) if rules else "- Никаких правил"
         prompt = MODERATION_PROMPT.format(rules=rules_text, message=message)
         
-        messages = [UserMessage(prompt)]
+        # ✅ КЛЮЧЕВОЙ МОМЕНТ: Создаём ChatMessage объекты!
+        messages = [ChatMessage(role="user", content=prompt)]
+        
+        logger.info(f"📤 Отправляю запрос к Mistral...")
         
         response = mistral_client.chat(
             model=MISTRAL_MODEL,
@@ -164,6 +161,7 @@ def analyze_with_mistral(message: str, rules: List[str]) -> Dict[str, Any]:
         )
         
         content = response.choices[0].message.content
+        logger.info(f"📥 Получен ответ от Mistral")
         
         try:
             json_start = content.find("{")
@@ -317,11 +315,13 @@ class Agent2Worker:
     
     def run(self):
         """Главный цикл обработки сообщений"""
-        logger.info("✅ Агент 2 запущен (Главный аналитик)")
+        logger.info("="*80)
+        logger.info("✅ АГЕНТ 2 ЗАПУЩЕН (Главный аналитик)")
         logger.info(f"📊 Модель: {MISTRAL_MODEL}")
         logger.info(f"📥 Импорт: {MISTRAL_IMPORT_VERSION}")
         logger.info(f"🔔 Очередь: {QUEUE_AGENT_2_INPUT}")
-        logger.info("⏱️  Нажмите Ctrl+C для остановки\n")
+        logger.info("⏱️  Нажмите Ctrl+C для остановки")
+        logger.info("="*80 + "\n")
         
         try:
             while True:
