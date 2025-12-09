@@ -440,4 +440,3 @@ if __name__ == "__main__":
         logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        
