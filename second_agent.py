@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🤖 АГЕНТ №2 — ГЛАВНЫЙ АНАЛИТИК (v1.3 FIXED)
-✅ Исправлена инициализация Mistral
-✅ Добавлена проверка подключения
-✅ Работает с legacy SDK v0.4.2
+🤖 АГЕНТ №2 — ГЛАВНЫЙ АНАЛИТИК (v1.4 DEBUG)
+✅ С полной отладкой инициализации
+✅ Всё логируется в stdout + файл
 """
 
 import json
@@ -26,56 +25,87 @@ from config import (
 logger = setup_logging("АГЕНТ 2")
 
 # ============================================================================
-# ИНИЦИАЛИЗАЦИЯ MISTRAL AI
+# ИНИЦИАЛИЗАЦИЯ MISTRAL AI (С ПОЛНОЙ ОТЛАДКОЙ)
 # ============================================================================
 
 mistral_client = None
 MISTRAL_VERSION = "none"
 
-logger.info("🔧 Инициализация Mistral AI...")
+print("\n" + "=" * 70)
+print("🔧 ИНИЦИАЛИЗАЦИЯ MISTRAL AI")
+print("=" * 70)
+
+# Логируем конфиг
+print(f"📊 Конфиг:")
+print(f"   MISTRAL_MODEL: {MISTRAL_MODEL}")
+print(f"   MISTRAL_API_KEY: {'SET' if MISTRAL_API_KEY else 'NOT SET'}")
+if MISTRAL_API_KEY:
+    print(f"   API Key length: {len(MISTRAL_API_KEY)}")
+    print(f"   First 10 chars: {MISTRAL_API_KEY[:10]}...")
+print(f"   Generation params: {MISTRAL_GENERATION_PARAMS}")
 
 try:
-    # Импортируем клиент
+    # ШАГ 1: Импорт
+    print("\n[1/4] Импортирую mistralai.client...")
     from mistralai.client import MistralClient
+    print("✅ Импорт успешен")
     logger.info("✅ Импорт mistralai.client успешен")
     
-    # Проверяем API ключ
+    # ШАГ 2: Проверка API ключа
+    print("\n[2/4] Проверяю API ключ...")
     if not MISTRAL_API_KEY:
-        logger.error("❌ MISTRAL_API_KEY не установлен в config!")
-        mistral_client = None
-    else:
-        logger.info(f"✅ API ключ найден (длина: {len(MISTRAL_API_KEY)})")
-        
-        # Создаём клиент
-        try:
-            mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
-            MISTRAL_VERSION = "v0.4.2 (legacy)"
-            logger.info("✅ Mistral клиент успешно создан")
-            
-            # Тестируем подключение (быстрый запрос)
-            logger.info("🧪 Тестирую подключение к API...")
-            test_msg = [{"role": "user", "content": "OK"}]
-            test_response = mistral_client.chat(
-                model=MISTRAL_MODEL,
-                messages=test_msg,
-                max_tokens=5
-            )
-            logger.info("✅ MISTRAL API ПОДКЛЮЧЕН И РАБОТАЕТ")
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка инициализации MistralClient: {e}")
-            logger.error(f"   Тип ошибки: {type(e).__name__}")
-            mistral_client = None
+        raise ValueError("❌ MISTRAL_API_KEY не установлен в config.py!")
+    print(f"✅ API ключ найден (длина: {len(MISTRAL_API_KEY)})")
+    logger.info(f"✅ API ключ найден (длина: {len(MISTRAL_API_KEY)})")
+    
+    # ШАГ 3: Создание клиента
+    print("\n[3/4] Создаю MistralClient...")
+    mistral_client = MistralClient(api_key=MISTRAL_API_KEY)
+    MISTRAL_VERSION = "v0.4.2 (legacy)"
+    print("✅ Mistral клиент создан")
+    logger.info("✅ Mistral клиент создан")
+    
+    # ШАГ 4: Тест подключения
+    print("\n[4/4] Тестирую подключение к API...")
+    test_msg = [{"role": "user", "content": "test"}]
+    print(f"   Отправляю запрос к {MISTRAL_MODEL}...")
+    test_response = mistral_client.chat(
+        model=MISTRAL_MODEL,
+        messages=test_msg,
+        max_tokens=5
+    )
+    print("✅ Ответ получен")
+    print(f"   Response type: {type(test_response)}")
+    print(f"   Response: {test_response}")
+    logger.info("✅ MISTRAL API ПОЛНОСТЬЮ ГОТОВ")
+
+except ValueError as e:
+    print(f"\n❌ ОШИБКА КОНФИГА: {e}")
+    logger.error(f"❌ ОШИБКА КОНФИГА: {e}")
+    mistral_client = None
 
 except ImportError as e:
-    logger.error(f"❌ Ошибка импорта mistralai: {e}")
-    logger.error("   Установите: pip install mistralai==0.4.2")
+    print(f"\n❌ ОШИБКА ИМПОРТА: {e}")
+    print("   Решение: pip install mistralai==0.4.2")
+    logger.error(f"❌ ОШИБКА ИМПОРТА: {e}")
     mistral_client = None
 
 except Exception as e:
-    logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА при инициализации: {e}")
-    logger.error(f"   Тип: {type(e).__name__}")
+    print(f"\n❌ ОШИБКА: {type(e).__name__}")
+    print(f"   {e}")
+    print(f"   Полная ошибка: {repr(e)}")
+    logger.error(f"❌ ОШИБКА: {type(e).__name__}: {e}")
     mistral_client = None
+
+# ИТОГ
+print("\n" + "=" * 70)
+if mistral_client:
+    print("✅✅✅ MISTRAL ИНИЦИАЛИЗИРОВАН И РАБОТАЕТ ✅✅✅")
+else:
+    print("❌❌❌ MISTRAL НЕ ИНИЦИАЛИЗИРОВАН ❌❌❌")
+print("=" * 70 + "\n")
+
+logger.info(f"ИТОГ: mistral_client = {mistral_client}")
 
 # ============================================================================
 # ПРОМПТ ДЛЯ MISTRAL
@@ -386,16 +416,20 @@ class Agent2Worker:
 
 if __name__ == "__main__":
     if not mistral_client:
-        logger.error("=" * 60)
-        logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Mistral НЕ ПОДКЛЮЧЕН")
-        logger.error("=" * 60)
-        logger.error("Проверьте:")
-        logger.error("1. MISTRAL_API_KEY в config.py")
-        logger.error("2. Установлена ли: pip install mistralai==0.4.2")
-        logger.error("3. Есть ли интернет")
-        logger.error("4. Валидный ли API ключ")
-        logger.error("=" * 60)
+        print("\n" + "=" * 70)
+        print("❌❌❌ КРИТИЧЕСКАЯ ОШИБКА ❌❌❌")
+        print("=" * 70)
+        print("Mistral НЕ подключен!")
+        print("\nПроверьте:")
+        print("1. MISTRAL_API_KEY установлен в config.py?")
+        print("2. pip install mistralai==0.4.2 установлен?")
+        print("3. Есть ли интернет?")
+        print("4. Валидный ли API ключ?")
+        print("=" * 70 + "\n")
+        logger.error("❌ Mistral НЕ инициализирован, выход")
         exit(1)
+    
+    print("\n✅ Mistral инициализирован, запускаю Worker...\n")
     
     try:
         worker = Agent2Worker()
@@ -406,3 +440,4 @@ if __name__ == "__main__":
         logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        
