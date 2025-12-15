@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 ⚙️ КОНФИГУРАЦИЯ TELEGUARD BOT И АГЕНТОВ
-Исправленная версия с get_db_connection_string()
 """
 
 import logging
@@ -11,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # ============================================================================
-# ЗАГРУЗКА .ENV (ПОСТОЯННОЕ ХРАНИЛИЩЕ КЛЮЧЕЙ)
+# UPLOAD .ENV (ПОСТОЯННОЕ ХРАНИЛИЩЕ КЛЮЧЕЙ)
 # ============================================================================
 
 ENV_FILE = Path(__file__).resolve().parent / ".env"
@@ -28,7 +27,7 @@ else:
 
 TELEGRAM_BOT_TOKEN = "8320009669:AAHadwhYKIg6qcwAwJabsBEOO7srfWwMiXE"
 TELEGRAM_API_URL = "https://api.telegram.org"
-TELEGRAM_API_BASE = "https://api.telegram.org"  # ← ДОБАВЛЕНО!
+TELEGRAM_API_BASE = "https://api.telegram.org" 
 
 # ============================================================================
 # DATABASE - PostgreSQL
@@ -42,7 +41,6 @@ DB_NAME = "teleguard"
 POSTGRES_URL = "postgresql+psycopg2://tg_user:mnvm71@localhost:5432/teleguard?sslmode=disable"
 
 def get_db_connection_string():
-    """Возвращает строку подключения к БД"""
     return POSTGRES_URL
 
 # ============================================================================
@@ -55,7 +53,6 @@ REDIS_DB = 0
 REDIS_PASSWORD = None
 
 def get_redis_config():
-    """Возвращает конфигурацию для Redis"""
     return {
         "host": REDIS_HOST,
         "port": REDIS_PORT,
@@ -65,7 +62,7 @@ def get_redis_config():
     }
 
 # ============================================================================
-# REDIS ОЧЕРЕДИ (QUEUES)
+# REDIS QUEUES
 # ============================================================================
 
 QUEUE_AGENT_1_INPUT = "queue:agent1:input"
@@ -100,13 +97,13 @@ MISTRAL_GENERATION_PARAMS = {
 }
 
 # ============================================================================
-# МОДЕРАТОРЫ
+# MODERATORS
 # ============================================================================
 
-MODERATOR_IDS = [1621052774]
+MODERATOR_IDS = [1621052774]    # Значение по умолчанию
 
 # ============================================================================
-# ПРАВИЛА ЧАТА (ПО УМОЛЧАНИЮ)
+# CHAT RULES (DEFAULT)
 # ============================================================================
 
 DEFAULT_RULES = [
@@ -120,7 +117,7 @@ DEFAULT_RULES = [
 ]
 
 # ============================================================================
-# ПОРТЫ АГЕНТОВ
+# AGENTS PORTS
 # ============================================================================
 
 AGENT_PORTS = {
@@ -133,14 +130,13 @@ AGENT_PORTS = {
 }
 
 # ============================================================================
-# ЛОГИРОВАНИЕ
+# LOGGING
 # ============================================================================
 
 LOG_LEVEL = "INFO"
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 def setup_logging(name):
-    """Настраивает логирование для модуля"""
     logger = logging.getLogger(name)
     logger.setLevel(LOG_LEVEL)
     
@@ -167,7 +163,7 @@ def setup_logging(name):
     return logger
 
 # ============================================================================
-# ПУТИ И ДИРЕКТОРИИ
+# PATHS AND DIRECTORIES
 # ============================================================================
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -180,7 +176,7 @@ Path(DATA_DIR).mkdir(exist_ok=True)
 Path(DOWNLOADS_DIR).mkdir(exist_ok=True)
 
 # ============================================================================
-# ДРУГИЕ НАСТРОЙКИ
+# OTHER SETTINGS
 # ============================================================================
 
 REQUEST_TIMEOUT = 30
@@ -189,7 +185,7 @@ RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2
 
 # ============================================================================
-# ПРОВЕРКА КОНФИГУРАЦИИ
+# CHECK CONFIG
 # ============================================================================
 
 if __name__ == "__main__":
@@ -216,7 +212,6 @@ if __name__ == "__main__":
 # ============================================================================
 
 def determine_action(violation_type: str, severity: int, confidence: float) -> dict:
-    """Определяет действие модерации по типу нарушения"""
     actions = {
         "мат": {
             "low": {"action": "warn", "duration": 0, "severity": "low"},
